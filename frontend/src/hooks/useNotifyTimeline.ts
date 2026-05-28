@@ -8,6 +8,7 @@ import {
 } from "react";
 import type { AuxiliaryLoadState, TimelineView } from "../app/types";
 import { fetchRecentNotifyEventsByPubkey } from "../lib/nostr/contacts";
+import { findReactionTargetId } from "../lib/nostr/contacts";
 import type { NostrEvent } from "../lib/nostr/relay";
 import type { RelayCoordinator } from "../lib/nostr/relayCoordinator";
 import { loadAccountRelayUrls } from "../lib/nostr/relaySettings";
@@ -22,6 +23,7 @@ import type { TimelineItem, TimelineProfile } from "../lib/wasm/client";
 const NOTIFY_REFRESH_INTERVAL_MS = 15_000;
 
 type UseNotifyTimelineArgs = {
+  accountTimeline: TimelineItem[];
   autoSignerPromptBlocked: boolean;
   ensureViewerPubkey: (manualPubkey: string | null) => Promise<string>;
   ingestOverlayEvents: (events: NostrEvent[]) => Promise<TimelineItem[] | null>;
@@ -57,6 +59,7 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
   const ingestOverlayEventsRef = useRef(args.ingestOverlayEvents);
   const markSignerUnavailableRef = useRef(args.markSignerUnavailable);
   const knownNotifyTargetEventIdsRef = useRef<Set<string>>(new Set());
+  const notifyTimelineRef = useRef<TimelineItem[]>([]);
 
   useEffect(() => {
     ensureViewerPubkeyRef.current = args.ensureViewerPubkey;
@@ -69,6 +72,10 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
   useEffect(() => {
     markSignerUnavailableRef.current = args.markSignerUnavailable;
   }, [args.markSignerUnavailable]);
+
+  useEffect(() => {
+    notifyTimelineRef.current = notifyTimeline;
+  }, [notifyTimeline]);
 
   useEffect(() => {
     if (args.relayBootstrapDeferred || args.timelineView !== "notify") {
@@ -175,7 +182,7 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
           },
         };
         const knownTargetEventIds = collectKnownNotifyTargetEventIds(
-          args.timelineRef.current,
+          [...args.accountTimeline, ...args.timelineRef.current],
           knownNotifyTargetEventIdsRef.current,
         );
 
@@ -204,6 +211,7 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
           ...reactionTargetEvents,
         ]);
         const referenceItems = [
+          ...args.accountTimeline,
           ...(snapshotItems ?? []),
           ...args.timelineRef.current,
         ];
@@ -214,6 +222,7 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
 
         const nextItems = buildNotifyTimelineItems({
           notificationEvents,
+          previousItems: notifyTimelineRef.current,
           profileSummaries: args.profileSummariesRef.current,
           reactionTargetEventsByReactionId,
           referenceItems,
@@ -221,7 +230,7 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
         });
         knownNotifyTargetEventIdsRef.current = collectKnownNotifyTargetEventIds(
           referenceItems,
-          collectNotifyTargetEventIdsFromItems(nextItems),
+          knownNotifyTargetEventIdsRef.current,
         );
 
         setNotifyEventIds(notificationEvents.map((event) => event.id));
@@ -251,6 +260,7 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
     };
   }, [
     args.autoSignerPromptBlocked,
+    args.accountTimeline,
     args.isResolvingSignerPubkey,
     args.manualPubkey,
     args.relayBootstrapDeferred,
@@ -277,7 +287,7 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
           currentItems: current,
           includeItem: (item) => notifyEventIds.includes(item.id),
           profileSummaries: args.profileSummariesRef.current,
-          referenceItems: args.timeline,
+          referenceItems: [...args.accountTimeline, ...args.timeline],
           timelineLimit: args.timelineLimit,
         }),
         notifyEventIds,
@@ -287,7 +297,7 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
           item,
           previousItem: currentItemsById.get(item.id),
           profileSummaries: args.profileSummariesRef.current,
-          referenceItems: [...current, ...args.timeline],
+          referenceItems: [...current, ...args.accountTimeline, ...args.timeline],
         }),
       );
 
@@ -295,6 +305,7 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
     });
   }, [
     args.profileSummariesRef,
+    args.accountTimeline,
     args.timeline,
     args.timelineLimit,
     notifyEventIds,
@@ -310,6 +321,8 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
     setNotifyTimeline([]);
     setNotifyEventIds([]);
     setRefreshRevision(0);
+    knownNotifyTargetEventIdsRef.current = new Set();
+    notifyTimelineRef.current = [];
   }, []);
 
   function primeNotifyLoad() {
@@ -349,20 +362,9 @@ function collectKnownNotifyTargetEventIds(
   return nextKnownIds;
 }
 
-function collectNotifyTargetEventIdsFromItems(items: TimelineItem[]) {
-  const targetEventIds = new Set<string>();
-
-  for (const item of items) {
-    if (item.notifyTargetEventId) {
-      targetEventIds.add(item.notifyTargetEventId);
-    }
-  }
-
-  return targetEventIds;
-}
-
 function buildNotifyTimelineItems(args: {
   notificationEvents: NostrEvent[];
+  previousItems: TimelineItem[];
   profileSummaries: Map<string, TimelineProfile>;
   reactionTargetEventsByReactionId: Map<string, NostrEvent>;
   referenceItems: TimelineItem[];
@@ -389,6 +391,7 @@ function buildNotifyTimelineItems(args: {
       .filter((event) => event.kind === 7)
       .map((event) => [event.id, event]),
   );
+  const previousItemsById = new Map(args.previousItems.map((item) => [item.id, item]));
 
   return buildAuxiliaryTimeline({
     events: args.notificationEvents,
@@ -398,6 +401,7 @@ function buildNotifyTimelineItems(args: {
   }).map((item) =>
     hydrateNotifyTimelineItem({
       item,
+      previousItem: previousItemsById.get(item.id),
       profileSummaries: args.profileSummaries,
       reactionEvent: reactionEventsById.get(item.id),
       reactionTargetEvent: args.reactionTargetEventsByReactionId.get(item.id),
@@ -431,6 +435,7 @@ function hydrateNotifyTimelineItem(args: {
   const notifyTargetEventId =
     args.item.notifyTargetEventId
     ?? args.reactionTargetEvent?.id
+    ?? (args.reactionEvent ? findReactionTargetId(args.reactionEvent) : null)
     ?? null;
   const notifyActorProfile = notifyActorPubkey
     ? args.profileSummaries.get(notifyActorPubkey) ?? args.item.notifyActorProfile ?? null
@@ -443,6 +448,7 @@ function hydrateNotifyTimelineItem(args: {
     const previousResolvedItem =
       args.previousItem?.notifyTargetEventId === notifyTargetEventId
       && args.previousItem.notifyActorPubkey === notifyActorPubkey
+      && isResolvedNotifyTargetBody(args.previousItem)
         ? args.previousItem
         : null;
 
@@ -494,6 +500,17 @@ function hydrateNotifyTimelineItem(args: {
     notifyReactionContent,
     notifyTargetEventId,
   };
+}
+
+function isResolvedNotifyTargetBody(item: TimelineItem) {
+  if (!item.notifyTargetEventId) {
+    return false;
+  }
+
+  return (
+    item.pubkey !== (item.notifyActorPubkey ?? item.pubkey)
+    || item.content !== (item.notifyReactionContent ?? item.content)
+  );
 }
 
 function normalizeNotifyPubkey(pubkey: string | undefined) {

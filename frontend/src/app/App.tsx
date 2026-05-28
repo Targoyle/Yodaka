@@ -254,6 +254,7 @@ export function App() {
     primeNotifyLoad,
     resetNotifyState,
   } = useNotifyTimeline({
+    accountTimeline,
     autoSignerPromptBlocked,
     ensureViewerPubkey,
     ingestOverlayEvents,

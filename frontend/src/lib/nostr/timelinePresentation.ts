@@ -189,8 +189,12 @@ export function mergeAuxiliaryTimeline(args: {
       currentItem?.notifyReactionContent ?? item.notifyReactionContent ?? null;
     const notifyTargetEventId =
       currentItem?.notifyTargetEventId ?? item.notifyTargetEventId ?? null;
+    const preserveResolvedNotifyBody =
+      item.kind === 7
+      && isResolvedNotifyTargetBody(currentItem)
+      && !item.notifyTargetEventId;
     const mergedItem: TimelineItem = {
-      ...item,
+      ...(preserveResolvedNotifyBody && currentItem ? currentItem : item),
       isReply,
       replyTargetPubkey,
       replyTargetProfile: latestReplyTargetProfile,
@@ -431,6 +435,17 @@ function replyContextPubkeysEqual(left: string[], right: string[]) {
   }
 
   return true;
+}
+
+function isResolvedNotifyTargetBody(item: TimelineItem | undefined) {
+  if (!item?.notifyTargetEventId) {
+    return false;
+  }
+
+  return (
+    item.pubkey !== (item.notifyActorPubkey ?? item.pubkey)
+    || item.content !== (item.notifyReactionContent ?? item.content)
+  );
 }
 
 export function buildTimelineEmptyMessage(

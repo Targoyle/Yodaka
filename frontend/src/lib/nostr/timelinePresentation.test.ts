@@ -148,6 +148,60 @@ describe("buildAuxiliaryTimeline", () => {
     expect(mergedItem?.likeCount).toBe(3);
   });
 
+  it("preserves resolved notify target body when merging with raw reaction items", () => {
+    const currentItem: TimelineItem = {
+      id: "reaction-id",
+      pubkey: "b".repeat(64),
+      createdAt: 20,
+      kind: 7,
+      content: "target post",
+      isReply: false,
+      replyTargetPubkey: null,
+      replyTargetProfile: null,
+      replyContextPubkeys: [],
+      likeCount: 2,
+      profile: {
+        name: null,
+        displayName: "Target",
+        picture: null,
+      },
+      notifyActorPubkey: "c".repeat(64),
+      notifyActorProfile: {
+        name: null,
+        displayName: "Actor",
+        picture: null,
+      },
+      notifyReactionContent: "😀",
+      notifyTargetEventId: "target-id",
+    };
+    const snapshotItem: TimelineItem = {
+      id: "reaction-id",
+      pubkey: "c".repeat(64),
+      createdAt: 20,
+      kind: 7,
+      content: "😀",
+      isReply: false,
+      replyTargetPubkey: null,
+      replyTargetProfile: null,
+      replyContextPubkeys: [],
+      likeCount: 0,
+      profile: null,
+    };
+
+    const [mergedItem] = mergeAuxiliaryTimeline({
+      currentItems: [currentItem],
+      includeItem: () => true,
+      profileSummaries: new Map(),
+      referenceItems: [snapshotItem],
+      timelineLimit: 20,
+    });
+
+    expect(mergedItem?.pubkey).toBe(currentItem.pubkey);
+    expect(mergedItem?.content).toBe(currentItem.content);
+    expect(mergedItem?.notifyActorPubkey).toBe(currentItem.notifyActorPubkey);
+    expect(mergedItem?.notifyTargetEventId).toBe(currentItem.notifyTargetEventId);
+  });
+
   it("merges follow and account timelines without duplicating self posts", () => {
     const selfPost: TimelineItem = {
       id: "self-post",

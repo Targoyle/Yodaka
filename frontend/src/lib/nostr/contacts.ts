@@ -767,7 +767,7 @@ function isLikeReactionEvent(event: NostrEvent) {
   return event.kind === 7 && (event.content === "" || event.content === "+");
 }
 
-function findReactionTargetId(event: NostrEvent) {
+export function findReactionTargetId(event: NostrEvent) {
   const taggedId = [...event.tags]
     .reverse()
     .find((tag) => tag[0] === "e")
