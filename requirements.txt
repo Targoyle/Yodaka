@@ -1,0 +1,2 @@
+semgrep>=1.74,<2
+websockets>=12,<16

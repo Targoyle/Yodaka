@@ -1,0 +1,27 @@
+[workspace]
+members = [
+    "crates/nostr_core",
+    "crates/nostr_wasm",
+    "crates/nostr_miner_core",
+    "crates/nostr_miner_wasm",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+version = "0.1.0"
+
+[workspace.dependencies]
+nostr = { version = "0.42.2", default-features = false }
+secp256k1 = { version = "0.29", default-features = false, features = ["alloc"] }
+serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+thiserror = "2.0"
+wasm-bindgen = "0.2"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+panic = "abort"

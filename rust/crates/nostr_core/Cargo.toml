@@ -1,0 +1,17 @@
+[package]
+name = "nostr_core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nostr = { workspace = true, features = ["alloc"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+
+[dev-dependencies]
+nostr = { workspace = true, features = ["std"] }

@@ -1,0 +1,10 @@
+frontend/dist/
+frontend/node_modules/
+frontend/.vite/
+frontend/src/wasm/
+frontend/*.tsbuildinfo
+rust/target/
+*.log
+__pycache__/
+*.pyc
+tools/sampling/output/

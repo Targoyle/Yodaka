@@ -1,0 +1,23 @@
+rules:
+  - id: react-dangerously-set-inner-html
+    message: 外部データを HTML として挿入しないでください。必要なら明示的な sanitize を入れてください。
+    severity: ERROR
+    languages:
+      - javascript
+      - typescript
+    pattern-regex: 'dangerouslySetInnerHTML\s*=\s*\{\{\s*__html\s*:'
+
+  - id: dom-raw-html-sink
+    message: 生の HTML を DOM sink へ渡さないでください。テキスト描画か sanitize 済み HTML に限定してください。
+    severity: ERROR
+    languages:
+      - javascript
+      - typescript
+    pattern-either:
+      - pattern: '$ELEMENT.innerHTML = $HTML'
+      - pattern: '$ELEMENT.outerHTML = $HTML'
+      - pattern: '$ELEMENT.insertAdjacentHTML($POSITION, $HTML)'
+      - pattern: 'document.write($HTML)'
+      - pattern: 'document.writeln($HTML)'
+      - pattern: '$RANGE.createContextualFragment($HTML)'
+      - pattern: '$FRAME.srcdoc = $HTML'
