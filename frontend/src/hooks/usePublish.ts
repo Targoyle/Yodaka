@@ -31,6 +31,7 @@ type UsePublishArgs = {
   createActiveSigner: () => NostrSigner | null;
   ensureSignerPubkey: () => Promise<string>;
   markSignerUnavailable: () => void;
+  rememberLocalReactionTarget: (item: TimelineItem) => void;
   queueProfileLookupRef: MutableRefObject<(pubkey: string) => void>;
   refreshSnapshotRef: MutableRefObject<() => Promise<TimelineItem[] | null>>;
   relayCoordinatorRef: MutableRefObject<RelayCoordinator | null>;
@@ -312,6 +313,7 @@ export function usePublish(args: UsePublishArgs) {
         }
       }
 
+      args.rememberLocalReactionTarget(item);
       setPublishMessage(formatReactionSuccessMessage(publishResult));
       setPublishError(null);
     } catch (error) {

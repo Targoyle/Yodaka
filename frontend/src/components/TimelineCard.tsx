@@ -10,6 +10,7 @@ import { sanitizeProfilePictureUrl } from "../lib/nostr/profile";
 import type { TimelineItem } from "../lib/wasm/client";
 import { buildAvatarStyle, pubkeyHexColor } from "../lib/ui/avatarStyle";
 import { formatCreatedAt, formatCreatedAtParts } from "../lib/ui/formatters";
+import type { TimelineView } from "../app/types";
 
 const REPLY_BAND_WIDTH_PX = 5;
 const MAX_REPLY_BANDS = 6;
@@ -24,6 +25,7 @@ type TimelineCardProps = {
   onReact: (item: TimelineItem) => void | Promise<void>;
   onResumeTimelineDisplay: () => void;
   readyWriteRelayCount: number;
+  timelineView: TimelineView;
 };
 
 export function TimelineCard(props: TimelineCardProps) {
@@ -34,10 +36,42 @@ export function TimelineCard(props: TimelineCardProps) {
   const avatarLabel = formatAvatarLabel(props.item, displayPubkey);
   const avatarStyle = buildAvatarStyle(props.item.pubkey);
   const replyContextLabel = formatReplyContextLabel(props.item);
-  const replyBandStyle = buildReplyBandStyle(props.item.replyContextPubkeys);
+  const replyBandStyle = buildReplyBandStyle(
+    buildTimelineBandPubkeys(props.timelineView, props.item),
+  );
   const createdAtParts = formatCreatedAtParts(props.item.createdAt);
   const pictureUrl = sanitizeProfilePictureUrl(props.item.profile?.picture);
   const showProfileImage = props.isProfileImageEnabled && Boolean(pictureUrl);
+  const notifyActorItem = props.item.notifyActorPubkey
+    ? {
+        ...props.item,
+        pubkey: props.item.notifyActorPubkey,
+        profile: props.item.notifyActorProfile ?? null,
+      }
+    : null;
+  const notifyActorPictureUrl = sanitizeProfilePictureUrl(
+    notifyActorItem?.profile?.picture,
+  );
+  const showNotifyActorProfileImage =
+    props.timelineView === "notify"
+    && props.item.kind === 7
+    && props.isProfileImageEnabled
+    && Boolean(notifyActorPictureUrl);
+  const notifyActorAvatarLabel = notifyActorItem
+    ? formatAvatarLabel(
+        notifyActorItem,
+        formatPubkey(notifyActorItem.pubkey),
+      )
+    : null;
+  const notifyActorAvatarStyle = notifyActorItem
+    ? buildAvatarStyle(notifyActorItem.pubkey)
+    : null;
+  const notifyLabel = formatNotifyLabel(props.timelineView, props.item, authorLabel);
+  const displayContent = formatTimelineItemContent(
+    props.timelineView,
+    props.item,
+  );
+  const showReactionButton = props.item.kind === 1;
   const reactionButtonDisabled =
     props.isPublishing
     || props.isReactionPending
@@ -75,21 +109,45 @@ export function TimelineCard(props: TimelineCardProps) {
           {replyContextLabel}
         </div>
       ) : null}
+      {notifyLabel ? (
+        <div className="muted timeline-reply-context">
+          {notifyLabel}
+        </div>
+      ) : null}
       <div className="timeline-header">
-        <div className="timeline-avatar" style={avatarStyle}>
-          {showProfileImage ? (
-            <img
-              className="timeline-avatar-image"
-              src={pictureUrl ?? undefined}
-              alt=""
-              loading="lazy"
-              referrerPolicy="no-referrer"
-            />
-          ) : (
-            <span className="timeline-avatar-fallback" aria-hidden="true">
-              {avatarLabel}
-            </span>
-          )}
+        <div className="timeline-avatar-stack">
+          <div className="timeline-avatar timeline-avatar-primary" style={avatarStyle}>
+            {showProfileImage ? (
+              <img
+                className="timeline-avatar-image"
+                src={pictureUrl ?? undefined}
+                alt=""
+                loading="lazy"
+                referrerPolicy="no-referrer"
+              />
+            ) : (
+              <span className="timeline-avatar-fallback" aria-hidden="true">
+                {avatarLabel}
+              </span>
+            )}
+          </div>
+          {notifyActorItem && notifyActorAvatarStyle ? (
+            <div className="timeline-avatar timeline-avatar-notify" style={notifyActorAvatarStyle}>
+              {showNotifyActorProfileImage ? (
+                <img
+                  className="timeline-avatar-image"
+                  src={notifyActorPictureUrl ?? undefined}
+                  alt=""
+                  loading="lazy"
+                  referrerPolicy="no-referrer"
+                />
+              ) : (
+                <span className="timeline-avatar-fallback" aria-hidden="true">
+                  {notifyActorAvatarLabel}
+                </span>
+              )}
+            </div>
+          ) : null}
         </div>
         <div className="timeline-identity">
           <div className="timeline-author-row">
@@ -109,25 +167,27 @@ export function TimelineCard(props: TimelineCardProps) {
           ) : null}
         </div>
       </div>
-      <p className="timeline-text">{props.item.content}</p>
+      <p className="timeline-text">{displayContent}</p>
       <div className="timeline-actions">
-        <button
-          type="button"
-          className="timeline-reaction-button"
-          disabled={reactionButtonDisabled}
-          title={reactionButtonTitle}
-          onMouseEnter={props.onPauseTimelineDisplay}
-          onMouseLeave={props.onResumeTimelineDisplay}
-          onClick={() => {
-            void props.onReact(props.item);
-          }}
-        >
-          <span aria-hidden="true">♡</span>
-          <span>{props.item.likeCount}</span>
-          <span className="timeline-reaction-label">
-            {props.isReactionPending ? "送信中..." : "Like"}
-          </span>
-        </button>
+        {showReactionButton ? (
+          <button
+            type="button"
+            className="timeline-reaction-button"
+            disabled={reactionButtonDisabled}
+            title={reactionButtonTitle}
+            onMouseEnter={props.onPauseTimelineDisplay}
+            onMouseLeave={props.onResumeTimelineDisplay}
+            onClick={() => {
+              void props.onReact(props.item);
+            }}
+          >
+            <span aria-hidden="true">♡</span>
+            <span>{props.item.likeCount}</span>
+            <span className="timeline-reaction-label">
+              {props.isReactionPending ? "送信中..." : "Like"}
+            </span>
+          </button>
+        ) : null}
         <time
           className="muted timeline-meta"
           dateTime={new Date(props.item.createdAt * 1000).toISOString()}
@@ -168,4 +228,63 @@ function buildReplyBandStyle(pubkeys: string[]) {
       })
       .join(", ")})`,
   };
+}
+
+function buildTimelineBandPubkeys(timelineView: TimelineView, item: TimelineItem) {
+  if (timelineView === "notify" && item.kind === 7 && item.notifyActorPubkey) {
+    return [item.notifyActorPubkey, ...item.replyContextPubkeys];
+  }
+
+  return item.replyContextPubkeys;
+}
+
+function formatTimelineItemContent(
+  timelineView: TimelineView,
+  item: TimelineItem,
+) {
+  if (timelineView === "notify" && item.kind === 7) {
+    return item.content;
+  }
+
+  if (item.kind === 7 && (item.content === "" || item.content === "+")) {
+    return "♡ Like";
+  }
+
+  return item.content;
+}
+
+function formatNotifyLabel(
+  timelineView: TimelineView,
+  item: TimelineItem,
+  fallbackAuthorLabel: string,
+) {
+  if (timelineView !== "notify") {
+    return null;
+  }
+
+  if (item.kind === 7) {
+    const actorPubkey = item.notifyActorPubkey ? formatPubkey(item.notifyActorPubkey) : null;
+    const actorItem = item.notifyActorPubkey
+      ? {
+          ...item,
+          pubkey: item.notifyActorPubkey,
+          profile: item.notifyActorProfile ?? null,
+        }
+      : null;
+    const actorLabel = actorItem
+      ? formatAuthorLabel(actorItem, actorPubkey ?? fallbackAuthorLabel)
+      : fallbackAuthorLabel;
+
+    return `${actorLabel} ${formatReactionBadgeLabel(item.notifyReactionContent ?? item.content)}`;
+  }
+
+  return null;
+}
+
+function formatReactionBadgeLabel(content: string) {
+  if (content === "" || content === "+") {
+    return "Like";
+  }
+
+  return content;
 }

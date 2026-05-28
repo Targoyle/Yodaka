@@ -179,13 +179,75 @@ describe("buildAuxiliaryTimeline", () => {
     const items = buildVisibleTimeline({
       accountTimeline: [selfPost],
       followTimeline: [followPost, selfPost],
+      notifyTimeline: [],
       overlayEventIds: [],
       profileSummaries: new Map(),
+      reactionTimeline: [],
       timeline: [],
       timelineLimit: 20,
       timelineView: "follow",
     });
 
     expect(items.map((item) => item.id)).toEqual(["follow-post", "self-post"]);
+  });
+
+  it("shows reaction timeline when reaction view is selected", () => {
+    const reactedPost: TimelineItem = {
+      id: "reacted-post",
+      pubkey: "c".repeat(64),
+      createdAt: 40,
+      kind: 1,
+      content: "reacted",
+      isReply: false,
+      replyTargetPubkey: null,
+      replyTargetProfile: null,
+      replyContextPubkeys: [],
+      likeCount: 4,
+      profile: null,
+    };
+
+    const items = buildVisibleTimeline({
+      accountTimeline: [],
+      followTimeline: [],
+      notifyTimeline: [],
+      overlayEventIds: [],
+      profileSummaries: new Map(),
+      reactionTimeline: [reactedPost],
+      timeline: [],
+      timelineLimit: 20,
+      timelineView: "reaction",
+    });
+
+    expect(items.map((item) => item.id)).toEqual(["reacted-post"]);
+  });
+
+  it("shows notify timeline when notify view is selected", () => {
+    const notifyPost: TimelineItem = {
+      id: "notify-post",
+      pubkey: "d".repeat(64),
+      createdAt: 50,
+      kind: 1,
+      content: "notify",
+      isReply: true,
+      replyTargetPubkey: "a".repeat(64),
+      replyTargetProfile: null,
+      replyContextPubkeys: ["a".repeat(64)],
+      likeCount: 0,
+      profile: null,
+    };
+
+    const items = buildVisibleTimeline({
+      accountTimeline: [],
+      followTimeline: [],
+      notifyTimeline: [notifyPost],
+      overlayEventIds: [],
+      profileSummaries: new Map(),
+      reactionTimeline: [],
+      timeline: [],
+      timelineLimit: 20,
+      timelineView: "notify",
+    });
+
+    expect(items.map((item) => item.id)).toEqual(["notify-post"]);
   });
 });

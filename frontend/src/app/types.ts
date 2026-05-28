@@ -1,4 +1,4 @@
-export type TimelineView = "relay" | "follow" | "account";
+export type TimelineView = "relay" | "follow" | "notify" | "reaction" | "account";
 
 export type AuxiliaryLoadState = "idle" | "loading" | "ready" | "error";
 

@@ -4,13 +4,16 @@ import type { TimelineItem } from "../lib/wasm/client";
 import { TimelineCard } from "./TimelineCard";
 
 type TimelinePanelProps = {
+  accountTabEnabled: boolean;
   canOpenPersonalTimeline: boolean;
   canSendReaction: boolean;
   emptyMessage: string;
   isProfileImageEnabled: boolean;
   isPublishing: boolean;
+  notifyTabEnabled: boolean;
   pendingReactionEventIds: string[];
   readyWriteRelayCount: number;
+  reactionTabEnabled: boolean;
   relayButtonTitle: string;
   timelineView: TimelineView;
   onReact: (item: TimelineItem) => void | Promise<void>;
@@ -180,6 +183,57 @@ export function TimelinePanel(props: TimelinePanelProps) {
           >
             Follow
           </button>
+          {props.accountTabEnabled ? (
+            <button
+              type="button"
+              className={`view-button${props.timelineView === "account" ? " view-button-active" : ""}`}
+              onClick={() => {
+                void props.onTimelineViewChange("account");
+              }}
+              disabled={!props.canOpenPersonalTimeline}
+              title={
+                !props.canOpenPersonalTimeline
+                  ? "公開鍵の入力または NIP-07 が必要です"
+                  : "Account"
+              }
+            >
+              Account
+            </button>
+          ) : null}
+          {props.notifyTabEnabled ? (
+            <button
+              type="button"
+              className={`view-button${props.timelineView === "notify" ? " view-button-active" : ""}`}
+              onClick={() => {
+                void props.onTimelineViewChange("notify");
+              }}
+              disabled={!props.canOpenPersonalTimeline}
+              title={
+                !props.canOpenPersonalTimeline
+                  ? "公開鍵の入力または NIP-07 が必要です"
+                  : "Notify"
+              }
+            >
+              Notify
+            </button>
+          ) : null}
+          {props.reactionTabEnabled ? (
+            <button
+              type="button"
+              className={`view-button${props.timelineView === "reaction" ? " view-button-active" : ""}`}
+              onClick={() => {
+                void props.onTimelineViewChange("reaction");
+              }}
+              disabled={!props.canOpenPersonalTimeline}
+              title={
+                !props.canOpenPersonalTimeline
+                  ? "公開鍵の入力または NIP-07 が必要です"
+                  : "Reaction"
+              }
+            >
+              Reaction
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -202,6 +256,7 @@ export function TimelinePanel(props: TimelinePanelProps) {
                 onReact={props.onReact}
                 onResumeTimelineDisplay={resumeTimelineDisplay}
                 readyWriteRelayCount={props.readyWriteRelayCount}
+                timelineView={props.timelineView}
               />
             );
           })}

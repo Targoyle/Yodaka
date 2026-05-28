@@ -34,6 +34,7 @@ type UseFollowTimelineArgs = {
   relayBootstrapDeferred: boolean;
   relayConfigurationKey: string;
   relayCoordinatorRef: MutableRefObject<RelayCoordinator | null>;
+  readyReadRelayCount: number;
   signerAvailable: boolean;
   timeline: TimelineItem[];
   timelineLimit: number;
@@ -48,6 +49,7 @@ export function useFollowTimeline(args: UseFollowTimelineArgs) {
   const [followSourceKey, setFollowSourceKey] = useState<string | null>(null);
   const [followError, setFollowError] = useState<string | null>(null);
   const [followTimeline, setFollowTimeline] = useState<TimelineItem[]>([]);
+  const [retryRevision, setRetryRevision] = useState(0);
 
   const ensureViewerPubkeyRef = useRef(args.ensureViewerPubkey);
   const ingestOverlayEventsRef = useRef(args.ingestOverlayEvents);
@@ -75,6 +77,20 @@ export function useFollowTimeline(args: UseFollowTimelineArgs) {
     }
 
     let cancelled = false;
+    let retryTimeoutId: number | null = null;
+
+    if (!args.relayCoordinatorRef.current || args.readyReadRelayCount === 0) {
+      retryTimeoutId = window.setTimeout(() => {
+        setRetryRevision((current) => current + 1);
+      }, 1_000);
+
+      return () => {
+        cancelled = true;
+        if (retryTimeoutId !== null) {
+          window.clearTimeout(retryTimeoutId);
+        }
+      };
+    }
 
     async function loadFollows() {
       if (args.isResolvingSignerPubkey) {
@@ -123,7 +139,70 @@ export function useFollowTimeline(args: UseFollowTimelineArgs) {
           setFollowTimeline([]);
         }
 
-        const relayTransport = args.relayCoordinatorRef.current;
+        const relayTransport = {
+          requestTemporaryEvents: async (
+            relayUrl: string,
+            filters: Parameters<RelayCoordinator["requestTemporaryEvents"]>[1],
+            timeoutMs?: number,
+          ) => {
+            const coordinator = args.relayCoordinatorRef.current;
+
+            if (!coordinator) {
+              return [];
+            }
+
+            try {
+              return await coordinator.requestTemporaryEvents(
+                relayUrl,
+                filters,
+                timeoutMs,
+              );
+            } catch (error) {
+              if (
+                error instanceof Error
+                && (
+                  error.message === "relay is not connected"
+                  || error.message === "relay client が初期化されていません"
+                )
+              ) {
+                return [];
+              }
+
+              throw error;
+            }
+          },
+          requestTemporaryLatestEvent: async (
+            relayUrl: string,
+            filters: Parameters<RelayCoordinator["requestTemporaryLatestEvent"]>[1],
+            timeoutMs?: number,
+          ) => {
+            const coordinator = args.relayCoordinatorRef.current;
+
+            if (!coordinator) {
+              return null;
+            }
+
+            try {
+              return await coordinator.requestTemporaryLatestEvent(
+                relayUrl,
+                filters,
+                timeoutMs,
+              );
+            } catch (error) {
+              if (
+                error instanceof Error
+                && (
+                  error.message === "relay is not connected"
+                  || error.message === "relay client が初期化されていません"
+                )
+              ) {
+                return null;
+              }
+
+              throw error;
+            }
+          },
+        };
         const targets =
           followSourceKey === sourceKey
             ? followTargets
@@ -190,6 +269,9 @@ export function useFollowTimeline(args: UseFollowTimelineArgs) {
 
     return () => {
       cancelled = true;
+      if (retryTimeoutId !== null) {
+        window.clearTimeout(retryTimeoutId);
+      }
     };
   }, [
     args.autoSignerPromptBlocked,
@@ -199,6 +281,7 @@ export function useFollowTimeline(args: UseFollowTimelineArgs) {
     args.relayBootstrapDeferred,
     args.relayConfigurationKey,
     args.relayCoordinatorRef,
+    args.readyReadRelayCount,
     args.signerAvailable,
     args.timelineLimit,
     args.timelineRef,
@@ -206,6 +289,7 @@ export function useFollowTimeline(args: UseFollowTimelineArgs) {
     args.viewerPubkey,
     followSourceKey,
     followTargets,
+    retryRevision,
   ]);
 
   useEffect(() => {

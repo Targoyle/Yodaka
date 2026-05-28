@@ -17,6 +17,7 @@ import {
 } from "../lib/nostr/timelinePresentation";
 import { moveRelaySettings } from "../lib/nostr/relaySettings";
 import {
+  loadAccountTabEnabled,
   buildDefaultRelaySettings,
   clearAppStorage,
   listActiveRelayUrls,
@@ -24,11 +25,16 @@ import {
   listWriteRelayUrls,
   loadDeveloperModeEnabled,
   loadManualPubkey,
+  loadNotifyTabEnabled,
   loadProfileImagesEnabled,
+  loadReactionTabEnabled,
   loadRelaySettings,
   loadThemePreference,
+  saveAccountTabEnabled,
   saveDeveloperModeEnabled,
   saveProfileImagesEnabled,
+  saveNotifyTabEnabled,
+  saveReactionTabEnabled,
   saveRelaySettings,
   saveThemePreference,
   type RelaySetting,
@@ -48,6 +54,8 @@ import { useManualPubkeyDialog } from "../hooks/useManualPubkeyDialog";
 import { useSignerPubkey } from "../hooks/useSignerPubkey";
 import { useFollowTimeline } from "../hooks/useFollowTimeline";
 import { useAccountTimeline } from "../hooks/useAccountTimeline";
+import { useNotifyTimeline } from "../hooks/useNotifyTimeline";
+import { useReactionTimeline } from "../hooks/useReactionTimeline";
 import { usePublish } from "../hooks/usePublish";
 import { useRelayBootstrap } from "../hooks/useRelayBootstrap";
 import { useKeyMinerPanel } from "../hooks/useKeyMinerPanel";
@@ -64,6 +72,15 @@ export function App() {
   );
   const [developerModeEnabled, setDeveloperModeEnabled] = useState(() =>
     loadDeveloperModeEnabled(),
+  );
+  const [accountTabEnabled, setAccountTabEnabled] = useState(() =>
+    loadAccountTabEnabled(),
+  );
+  const [notifyTabEnabled, setNotifyTabEnabled] = useState(() =>
+    loadNotifyTabEnabled(),
+  );
+  const [reactionTabEnabled, setReactionTabEnabled] = useState(() =>
+    loadReactionTabEnabled(),
   );
   const settingsMenuRef = useRef<HTMLDetailsElement | null>(null);
   const [themePreference, setThemePreference] = useState<ThemePreference>(() =>
@@ -170,32 +187,10 @@ export function App() {
   const canSignEvents = activeSignerKind === "local" || signerAvailable;
   const canOpenPersonalTimeline = canSignEvents || Boolean(viewerPubkey);
   const hasAutoSwitchedToFollowRef = useRef(false);
-
-  const {
-    draftContent,
-    handleDraftContentChange,
-    handleDraftKeyDown,
-    handlePublish,
-    handleReaction,
-    isPublishing,
-    pendingReactionEventIds,
-    publishError,
-    publishMessage,
-  } = usePublish({
-    applyRelayPublishDiagnostics,
-    countReadyWriteRelays,
-    createActiveSigner,
-    ensureSignerPubkey,
-    markSignerUnavailable,
-    queueProfileLookupRef,
-    refreshSnapshotRef,
-    relayCoordinatorRef,
-    requestSignerPubkeyFromUserGesture,
-    scheduleRefreshRef,
-    selectReactionRelayHint,
-    signerPubkey,
-    writeRelayUrls,
-  });
+  const readyReadRelayCount = relayStatus.relayStatuses.filter(
+    (status) =>
+      readRelayUrls.includes(status.relayUrl) && status.phase === "live",
+  ).length;
 
   const {
     clearFollowError,
@@ -216,6 +211,7 @@ export function App() {
     relayBootstrapDeferred,
     relayConfigurationKey,
     relayCoordinatorRef,
+    readyReadRelayCount,
     signerAvailable,
     timeline,
     timelineLimit: TIMELINE_LIMIT,
@@ -242,12 +238,95 @@ export function App() {
     relayBootstrapDeferred,
     relayConfigurationKey,
     relayCoordinatorRef,
+    readyReadRelayCount,
     signerAvailable,
     timeline,
     timelineLimit: TIMELINE_LIMIT,
     timelineRef,
     timelineView,
     viewerPubkey,
+  });
+  const {
+    clearNotifyError,
+    notifyError,
+    notifyLoadState,
+    notifyTimeline,
+    primeNotifyLoad,
+    resetNotifyState,
+  } = useNotifyTimeline({
+    autoSignerPromptBlocked,
+    ensureViewerPubkey,
+    ingestOverlayEvents,
+    isResolvingSignerPubkey,
+    manualPubkey,
+    markSignerUnavailable,
+    profileSummariesRef,
+    readRelayUrls,
+    relayBootstrapDeferred,
+    relayConfigurationKey,
+    relayCoordinatorRef,
+    readyReadRelayCount,
+    signerAvailable,
+    timeline,
+    timelineLimit: TIMELINE_LIMIT,
+    timelineRef,
+    timelineView,
+    viewerPubkey,
+  });
+  const {
+    clearReactionError,
+    primeReactionLoad,
+    reactionError,
+    reactionLoadState,
+    reactionTimeline,
+    rememberLocalReactionTarget,
+    resetReactionState,
+  } = useReactionTimeline({
+    autoSignerPromptBlocked,
+    ensureViewerPubkey,
+    ingestOverlayEvents,
+    isResolvingSignerPubkey,
+    manualPubkey,
+    markSignerUnavailable,
+    profileSummariesRef,
+    readRelayUrls,
+    relayBootstrapDeferred,
+    relayConfigurationKey,
+    relayCoordinatorRef,
+    readyReadRelayCount,
+    signerAvailable,
+    timeline,
+    timelineLimit: TIMELINE_LIMIT,
+    timelineRef,
+    timelineView,
+    viewerPubkey,
+  });
+
+  const {
+    draftContent,
+    handleDraftContentChange,
+    handleDraftKeyDown,
+    handlePublish,
+    handleReaction,
+    isPublishing,
+    pendingReactionEventIds,
+    publishError,
+    publishMessage,
+  } = usePublish({
+    applyRelayPublishDiagnostics,
+    countReadyWriteRelays,
+    createActiveSigner,
+    ensureSignerPubkey,
+    markSignerUnavailable,
+    queueProfileLookupRef,
+    refreshSnapshotRef,
+    relayCoordinatorRef,
+    requestSignerPubkeyFromUserGesture,
+    rememberLocalReactionTarget,
+    scheduleRefreshRef,
+    selectReactionRelayHint,
+    signerPubkey,
+    writeRelayUrls,
   });
 
   useEffect(() => {
@@ -271,6 +350,26 @@ export function App() {
     hasAutoSwitchedToFollowRef.current = true;
     setTimelineView("follow");
   }, [timelineView, viewerPubkey]);
+
+  useEffect(() => {
+    const hiddenCurrentView =
+      (timelineView === "account" && !accountTabEnabled)
+      || (timelineView === "notify" && !notifyTabEnabled)
+      || (timelineView === "reaction" && !reactionTabEnabled);
+
+    if (!hiddenCurrentView) {
+      return;
+    }
+
+    hasAutoSwitchedToFollowRef.current = true;
+    setTimelineView(canOpenPersonalTimeline ? "follow" : "relay");
+  }, [
+    accountTabEnabled,
+    canOpenPersonalTimeline,
+    notifyTabEnabled,
+    reactionTabEnabled,
+    timelineView,
+  ]);
 
   useEffect(() => {
     saveRelaySettings(relaySettings);
@@ -324,7 +423,16 @@ export function App() {
 
     resetFollowState();
     resetAccountState();
-  }, [relayBootstrapDeferred, relayConfigurationKey, resetAccountState, resetFollowState]);
+    resetNotifyState();
+    resetReactionState();
+  }, [
+    relayBootstrapDeferred,
+    relayConfigurationKey,
+    resetAccountState,
+    resetFollowState,
+    resetNotifyState,
+    resetReactionState,
+  ]);
 
   function handleProfileImagesToggle(event: ChangeEvent<HTMLInputElement>) {
     const enabled = event.target.checked;
@@ -338,6 +446,27 @@ export function App() {
 
     setDeveloperModeEnabled(enabled);
     saveDeveloperModeEnabled(enabled);
+  }
+
+  function handleAccountTabToggle(event: ChangeEvent<HTMLInputElement>) {
+    const enabled = event.target.checked;
+
+    setAccountTabEnabled(enabled);
+    saveAccountTabEnabled(enabled);
+  }
+
+  function handleNotifyTabToggle(event: ChangeEvent<HTMLInputElement>) {
+    const enabled = event.target.checked;
+
+    setNotifyTabEnabled(enabled);
+    saveNotifyTabEnabled(enabled);
+  }
+
+  function handleReactionTabToggle(event: ChangeEvent<HTMLInputElement>) {
+    const enabled = event.target.checked;
+
+    setReactionTabEnabled(enabled);
+    saveReactionTabEnabled(enabled);
   }
 
   function handleThemePreferenceChange(preference: ThemePreference) {
@@ -536,6 +665,8 @@ export function App() {
     if (view === "relay") {
       clearFollowError();
       clearAccountError();
+      clearNotifyError();
+      clearReactionError();
       return;
     }
 
@@ -547,6 +678,14 @@ export function App() {
       primeAccountLoad();
     }
 
+    if (view === "notify" && notifyLoadState === "idle") {
+      primeNotifyLoad();
+    }
+
+    if (view === "reaction" && reactionLoadState === "idle") {
+      primeReactionLoad();
+    }
+
     if (view === "account" && accountLoadState === "idle") {
       primeAccountLoad();
     }
@@ -555,8 +694,10 @@ export function App() {
   const visibleTimeline = buildVisibleTimeline({
     accountTimeline,
     followTimeline,
+    notifyTimeline,
     overlayEventIds,
     profileSummaries: profileSummariesRef.current,
+    reactionTimeline,
     timeline,
     timelineLimit: TIMELINE_LIMIT,
     timelineView,
@@ -571,20 +712,29 @@ export function App() {
     timelineView,
     followLoadState,
     accountLoadState,
+    notifyLoadState,
+    reactionLoadState,
     timelineView === "follow" ? visibleTimeline.length : followTimeline.length,
+    timelineView === "notify" ? visibleTimeline.length : notifyTimeline.length,
+    timelineView === "reaction" ? visibleTimeline.length : reactionTimeline.length,
     accountError,
     followError,
+    notifyError,
+    reactionError,
   );
 
   return (
     <main className="shell">
       <AppToolbar
         activeSignerKind={activeSignerKind}
+        accountTabEnabled={accountTabEnabled}
         developerModeEnabled={developerModeEnabled}
         isResolvingSignerPubkey={isResolvingSignerPubkey}
         keyMinerOpen={keyMinerOpen}
         manualPubkey={manualPubkey}
+        notifyTabEnabled={notifyTabEnabled}
         profileImagesEnabled={profileImagesEnabled}
+        reactionTabEnabled={reactionTabEnabled}
         relayBootstrapDeferred={relayBootstrapDeferred}
         relayDiagnostics={relayDiagnostics}
         relayDraftUrl={relayDraftUrl}
@@ -596,10 +746,13 @@ export function App() {
         signerPubkey={signerPubkey}
         syncStatus={syncStatus}
         themePreference={themePreference}
+        onAccountTabToggle={handleAccountTabToggle}
         onClearLocalData={handleClearLocalData}
         onDeveloperModeToggle={handleDeveloperModeToggle}
         onKeyMinerToggle={handleKeyMinerToggle}
+        onNotifyTabToggle={handleNotifyTabToggle}
         onProfileImagesToggle={handleProfileImagesToggle}
+        onReactionTabToggle={handleReactionTabToggle}
         onRelayAdd={handleRelayAdd}
         onRelayDraftChange={handleRelayDraftChange}
         onRelayMove={handleRelayMove}
@@ -639,15 +792,18 @@ export function App() {
             />
           ) : null}
 
-          <TimelinePanel
-            canOpenPersonalTimeline={canOpenPersonalTimeline}
-            canSendReaction={canSendReaction}
-            emptyMessage={timelineEmptyMessage}
-            isProfileImageEnabled={profileImagesEnabled}
-            isPublishing={isPublishing}
-            pendingReactionEventIds={pendingReactionEventIds}
-            readyWriteRelayCount={readyWriteRelayCount}
-            relayButtonTitle={relayButtonTitle}
+        <TimelinePanel
+          accountTabEnabled={accountTabEnabled}
+          canOpenPersonalTimeline={canOpenPersonalTimeline}
+          canSendReaction={canSendReaction}
+          emptyMessage={timelineEmptyMessage}
+          isProfileImageEnabled={profileImagesEnabled}
+          isPublishing={isPublishing}
+          notifyTabEnabled={notifyTabEnabled}
+          pendingReactionEventIds={pendingReactionEventIds}
+          readyWriteRelayCount={readyWriteRelayCount}
+          reactionTabEnabled={reactionTabEnabled}
+          relayButtonTitle={relayButtonTitle}
             timelineView={timelineView}
             onReact={handleReaction}
             onTimelineViewChange={handleTimelineViewChange}

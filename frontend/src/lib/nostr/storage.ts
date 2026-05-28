@@ -4,6 +4,9 @@ const RELAY_URLS_KEY = "nostr-client.relay-urls";
 const RELAY_SETTINGS_KEY = "nostr-client.relay-settings";
 const PROFILE_IMAGES_ENABLED_KEY = "nostr-client.profile-images-enabled";
 const DEVELOPER_MODE_ENABLED_KEY = "nostr-client.developer-mode-enabled";
+const ACCOUNT_TAB_ENABLED_KEY = "nostr-client.account-tab-enabled";
+const NOTIFY_TAB_ENABLED_KEY = "nostr-client.notify-tab-enabled";
+const REACTION_TAB_ENABLED_KEY = "nostr-client.reaction-tab-enabled";
 const THEME_PREFERENCE_KEY = "nostr-client.theme-preference";
 const MANUAL_PUBKEY_KEY = "nostr-client.manual-pubkey";
 const APP_STORAGE_KEYS = [
@@ -11,6 +14,9 @@ const APP_STORAGE_KEYS = [
   RELAY_SETTINGS_KEY,
   PROFILE_IMAGES_ENABLED_KEY,
   DEVELOPER_MODE_ENABLED_KEY,
+  ACCOUNT_TAB_ENABLED_KEY,
+  NOTIFY_TAB_ENABLED_KEY,
+  REACTION_TAB_ENABLED_KEY,
   THEME_PREFERENCE_KEY,
   MANUAL_PUBKEY_KEY,
 ] as const;
@@ -27,6 +33,9 @@ const RECENT_DEFAULT_RELAY_URLS = [
 const DEFAULT_RELAY_URLS = [...RECENT_DEFAULT_RELAY_URLS];
 const DEFAULT_PROFILE_IMAGES_ENABLED = false;
 const DEFAULT_DEVELOPER_MODE_ENABLED = false;
+const DEFAULT_ACCOUNT_TAB_ENABLED = false;
+const DEFAULT_NOTIFY_TAB_ENABLED = true;
+const DEFAULT_REACTION_TAB_ENABLED = false;
 
 export type ThemePreference = "light" | "dark";
 export type RelaySetting = {
@@ -112,6 +121,48 @@ export function loadDeveloperModeEnabled() {
 
 export function saveDeveloperModeEnabled(enabled: boolean) {
   window.localStorage.setItem(DEVELOPER_MODE_ENABLED_KEY, String(enabled));
+}
+
+export function loadAccountTabEnabled() {
+  const raw = window.localStorage.getItem(ACCOUNT_TAB_ENABLED_KEY);
+
+  if (raw === null) {
+    return DEFAULT_ACCOUNT_TAB_ENABLED;
+  }
+
+  return raw === "true";
+}
+
+export function saveAccountTabEnabled(enabled: boolean) {
+  window.localStorage.setItem(ACCOUNT_TAB_ENABLED_KEY, String(enabled));
+}
+
+export function loadNotifyTabEnabled() {
+  const raw = window.localStorage.getItem(NOTIFY_TAB_ENABLED_KEY);
+
+  if (raw === null) {
+    return DEFAULT_NOTIFY_TAB_ENABLED;
+  }
+
+  return raw === "true";
+}
+
+export function saveNotifyTabEnabled(enabled: boolean) {
+  window.localStorage.setItem(NOTIFY_TAB_ENABLED_KEY, String(enabled));
+}
+
+export function loadReactionTabEnabled() {
+  const raw = window.localStorage.getItem(REACTION_TAB_ENABLED_KEY);
+
+  if (raw === null) {
+    return DEFAULT_REACTION_TAB_ENABLED;
+  }
+
+  return raw === "true";
+}
+
+export function saveReactionTabEnabled(enabled: boolean) {
+  window.localStorage.setItem(REACTION_TAB_ENABLED_KEY, String(enabled));
 }
 
 export function loadThemePreference(): ThemePreference {

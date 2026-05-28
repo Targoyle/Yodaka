@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  loadAccountTabEnabled,
+  loadNotifyTabEnabled,
+  loadReactionTabEnabled,
   clearAppStorage,
   listActiveRelayUrls,
   listReadRelayUrls,
@@ -10,16 +13,22 @@ import {
   loadRelayUrls,
   loadThemePreference,
   listWriteRelayUrls,
+  saveAccountTabEnabled,
   saveDeveloperModeEnabled,
   saveManualPubkey,
+  saveNotifyTabEnabled,
   saveProfileImagesEnabled,
+  saveReactionTabEnabled,
   saveRelaySettings,
   saveThemePreference,
 } from "./storage";
 
+const ACCOUNT_TAB_ENABLED_KEY = "nostr-client.account-tab-enabled";
 const DEVELOPER_MODE_ENABLED_KEY = "nostr-client.developer-mode-enabled";
 const MANUAL_PUBKEY_KEY = "nostr-client.manual-pubkey";
+const NOTIFY_TAB_ENABLED_KEY = "nostr-client.notify-tab-enabled";
 const PROFILE_IMAGES_ENABLED_KEY = "nostr-client.profile-images-enabled";
+const REACTION_TAB_ENABLED_KEY = "nostr-client.reaction-tab-enabled";
 const RELAY_SETTINGS_KEY = "nostr-client.relay-settings";
 const RELAY_URLS_KEY = "nostr-client.relay-urls";
 const THEME_PREFERENCE_KEY = "nostr-client.theme-preference";
@@ -89,6 +98,37 @@ describe("developer mode", () => {
   });
 });
 
+describe("optional timeline tabs", () => {
+  beforeEach(() => {
+    const storage = createLocalStorageStub();
+
+    vi.stubGlobal("window", {
+      localStorage: storage,
+      matchMedia: vi.fn(() => ({ matches: false })),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("保存値がなければ既定値を返す", () => {
+    expect(loadAccountTabEnabled()).toBe(false);
+    expect(loadNotifyTabEnabled()).toBe(true);
+    expect(loadReactionTabEnabled()).toBe(false);
+  });
+
+  it("保存値をそのまま復元する", () => {
+    saveAccountTabEnabled(true);
+    saveNotifyTabEnabled(false);
+    saveReactionTabEnabled(true);
+
+    expect(loadAccountTabEnabled()).toBe(true);
+    expect(loadNotifyTabEnabled()).toBe(false);
+    expect(loadReactionTabEnabled()).toBe(true);
+  });
+});
+
 describe("clearAppStorage", () => {
   beforeEach(() => {
     const storage = createLocalStorageStub();
@@ -114,7 +154,10 @@ describe("clearAppStorage", () => {
       },
     ]);
     saveDeveloperModeEnabled(true);
+    saveAccountTabEnabled(true);
+    saveNotifyTabEnabled(false);
     saveProfileImagesEnabled(true);
+    saveReactionTabEnabled(true);
     saveThemePreference("dark");
     saveManualPubkey("f".repeat(64));
     window.localStorage.setItem("external-key", "keep");
@@ -124,12 +167,18 @@ describe("clearAppStorage", () => {
     expect(window.localStorage.getItem(RELAY_SETTINGS_KEY)).toBeNull();
     expect(window.localStorage.getItem(RELAY_URLS_KEY)).toBeNull();
     expect(window.localStorage.getItem(DEVELOPER_MODE_ENABLED_KEY)).toBeNull();
+    expect(window.localStorage.getItem(ACCOUNT_TAB_ENABLED_KEY)).toBeNull();
+    expect(window.localStorage.getItem(NOTIFY_TAB_ENABLED_KEY)).toBeNull();
     expect(window.localStorage.getItem(PROFILE_IMAGES_ENABLED_KEY)).toBeNull();
+    expect(window.localStorage.getItem(REACTION_TAB_ENABLED_KEY)).toBeNull();
     expect(window.localStorage.getItem(THEME_PREFERENCE_KEY)).toBeNull();
     expect(window.localStorage.getItem(MANUAL_PUBKEY_KEY)).toBeNull();
     expect(window.localStorage.getItem("external-key")).toBe("keep");
+    expect(loadAccountTabEnabled()).toBe(false);
     expect(loadDeveloperModeEnabled()).toBe(false);
+    expect(loadNotifyTabEnabled()).toBe(true);
     expect(loadProfileImagesEnabled()).toBe(false);
+    expect(loadReactionTabEnabled()).toBe(false);
   });
 });
 

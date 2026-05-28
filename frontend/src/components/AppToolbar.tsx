@@ -24,11 +24,14 @@ import { RelaySettingsMenu } from "./RelaySettingsMenu";
 
 type AppToolbarProps = {
   activeSignerKind: SignerKind | null;
+  accountTabEnabled: boolean;
   developerModeEnabled: boolean;
   isResolvingSignerPubkey: boolean;
   keyMinerOpen: boolean;
   manualPubkey: string | null;
+  notifyTabEnabled: boolean;
   profileImagesEnabled: boolean;
+  reactionTabEnabled: boolean;
   relayBootstrapDeferred: boolean;
   relayDiagnostics: Record<string, RelayDiagnosticState>;
   relayDraftUrl: string;
@@ -40,10 +43,13 @@ type AppToolbarProps = {
   signerPubkey: string | null;
   syncStatus: string;
   themePreference: ThemePreference;
+  onAccountTabToggle: ChangeEventHandler<HTMLInputElement>;
   onClearLocalData: () => void;
   onDeveloperModeToggle: ChangeEventHandler<HTMLInputElement>;
   onKeyMinerToggle: () => void;
+  onNotifyTabToggle: ChangeEventHandler<HTMLInputElement>;
   onProfileImagesToggle: ChangeEventHandler<HTMLInputElement>;
+  onReactionTabToggle: ChangeEventHandler<HTMLInputElement>;
   onRelayAdd: FormEventHandler<HTMLFormElement>;
   onRelayDraftChange: ChangeEventHandler<HTMLInputElement>;
   onRelayMove: (url: string, direction: -1 | 1) => void;
@@ -116,9 +122,12 @@ export function AppToolbar(props: AppToolbarProps) {
           </button>
 
           <RelaySettingsMenu
+            accountTabEnabled={props.accountTabEnabled}
             developerModeEnabled={props.developerModeEnabled}
             keyMinerOpen={props.keyMinerOpen}
+            notifyTabEnabled={props.notifyTabEnabled}
             profileImagesEnabled={props.profileImagesEnabled}
+            reactionTabEnabled={props.reactionTabEnabled}
             relayBootstrapDeferred={props.relayBootstrapDeferred}
             relayDiagnostics={props.relayDiagnostics}
             relayDraftUrl={props.relayDraftUrl}
@@ -126,10 +135,13 @@ export function AppToolbar(props: AppToolbarProps) {
             relaySettingsError={props.relaySettingsError}
             relayStatus={props.relayStatus}
             settingsMenuRef={props.settingsMenuRef}
+            onAccountTabToggle={props.onAccountTabToggle}
             onClearLocalData={props.onClearLocalData}
             onDeveloperModeToggle={props.onDeveloperModeToggle}
             onKeyMinerToggle={props.onKeyMinerToggle}
+            onNotifyTabToggle={props.onNotifyTabToggle}
             onProfileImagesToggle={props.onProfileImagesToggle}
+            onReactionTabToggle={props.onReactionTabToggle}
             onRelayAdd={props.onRelayAdd}
             onRelayDraftChange={props.onRelayDraftChange}
             onRelayMove={props.onRelayMove}

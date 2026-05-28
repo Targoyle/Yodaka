@@ -1,4 +1,9 @@
-import { parseRelayMessage, matchesRelayFilter, type NostrEvent } from "./relay";
+import {
+  parseRelayMessage,
+  matchesRelayFilter,
+  type NostrEvent,
+  type RelayFilter,
+} from "./relay";
 import { normalizeHexPubkey } from "./pubkey";
 import {
   normalizeRelayUrl,
@@ -21,22 +26,19 @@ export type FollowTarget = {
 export type RelayOneShotTransport = {
   requestTemporaryLatestEvent?: (
     relayUrl: string,
-    filters: {
-      kinds: number[];
-      authors: string[];
-      limit?: number;
-    }[],
+    filters: RelayFilter[],
     timeoutMs?: number,
   ) => Promise<NostrEvent | null>;
   requestTemporaryEvents?: (
     relayUrl: string,
-    filters: {
-      kinds: number[];
-      authors: string[];
-      limit?: number;
-    }[],
+    filters: RelayFilter[],
     timeoutMs?: number,
   ) => Promise<NostrEvent[]>;
+};
+
+export type NotifyFetchResult = {
+  notificationEvents: NostrEvent[];
+  reactionTargetEventsByReactionId: Map<string, NostrEvent>;
 };
 
 export async function fetchFollowTargets(
@@ -131,6 +133,122 @@ export async function fetchRecentNotesByAuthors(
   limit: number,
   transport?: RelayOneShotTransport | null,
 ) {
+  return fetchRecentEventsByAuthors(relayUrls, authors, [1], limit, transport);
+}
+
+export async function fetchRecentReactionNotesByAuthors(
+  relayUrls: string[],
+  authors: string[],
+  limit: number,
+  transport?: RelayOneShotTransport | null,
+) {
+  const reactionEvents = await fetchRecentEventsByAuthors(
+    relayUrls,
+    authors,
+    [7],
+    limit,
+    transport,
+  );
+  const targetIds = extractLikeReactionTargetIds(reactionEvents).slice(0, limit);
+
+  if (targetIds.length === 0) {
+    return {
+      targetEvents: [],
+      targetIds: [],
+    };
+  }
+
+  const targetEvents = await fetchRecentEventsByIds(
+    relayUrls,
+    targetIds,
+    [1],
+    limit,
+    transport,
+  );
+  const targetEventsById = new Map(targetEvents.map((event) => [event.id, event]));
+
+  return {
+    targetEvents: targetIds
+      .map((targetId) => targetEventsById.get(targetId) ?? null)
+      .filter((event): event is NostrEvent => event !== null),
+    targetIds,
+  };
+}
+
+export async function fetchRecentNotifyEventsByPubkey(
+  relayUrls: string[],
+  pubkey: string,
+  limit: number,
+  transport?: RelayOneShotTransport | null,
+  knownTargetEventIds?: ReadonlySet<string> | null,
+): Promise<NotifyFetchResult> {
+  const normalizedPubkey = normalizeHexPubkey(pubkey);
+
+  if (!normalizedPubkey) {
+    return {
+      notificationEvents: [],
+      reactionTargetEventsByReactionId: new Map(),
+    };
+  }
+
+  const fetchLimit = Math.max(limit * 3, limit);
+  const events = await fetchRecentEventsByTagValues(
+    relayUrls,
+    "p",
+    [normalizedPubkey],
+    [1, 7],
+    fetchLimit,
+    transport,
+  );
+
+  const notificationEvents = events
+    .filter((event) => normalizeHexPubkey(event.pubkey) !== normalizedPubkey)
+    .slice(0, limit);
+  const reactionTargetIdEntries = notificationEvents
+    .filter((event) => event.kind === 7)
+    .map((event) => {
+      const targetId = findReactionTargetId(event);
+      return targetId ? [event.id, targetId] as const : null;
+    })
+    .filter((entry): entry is readonly [string, string] => entry !== null);
+  const missingReactionTargetIdEntries = reactionTargetIdEntries.filter(
+    ([, targetId]) => !knownTargetEventIds?.has(targetId),
+  );
+
+  if (missingReactionTargetIdEntries.length === 0) {
+    return {
+      notificationEvents,
+      reactionTargetEventsByReactionId: new Map(),
+    };
+  }
+
+  const targetEvents = await fetchRecentEventsByIds(
+    relayUrls,
+    missingReactionTargetIdEntries.map(([, targetId]) => targetId),
+    [1],
+    Math.max(limit, missingReactionTargetIdEntries.length),
+    transport,
+  );
+  const targetEventsById = new Map(targetEvents.map((event) => [event.id, event]));
+
+  return {
+    notificationEvents,
+    reactionTargetEventsByReactionId: new Map(
+      missingReactionTargetIdEntries.flatMap(([reactionEventId, targetId]) => {
+        const targetEvent = targetEventsById.get(targetId);
+        return targetEvent ? [[reactionEventId, targetEvent] as const] : [];
+      }),
+    ),
+  };
+}
+
+async function fetchRecentEventsByAuthors(
+  relayUrls: string[],
+  authors: string[],
+  kinds: number[],
+  limit: number,
+  transport?: RelayOneShotTransport | null,
+) {
   const normalizedAuthors = [
     ...new Set(
       authors
@@ -147,10 +265,80 @@ export async function fetchRecentNotesByAuthors(
   const settled = await Promise.allSettled(
     normalizedRelays.map((relayUrl) =>
       requestEvents(relayUrl, {
-        kinds: [1],
+        kinds,
         authors: normalizedAuthors,
         limit,
       }, transport),
+    ),
+  );
+
+  return mergeAndLimitEvents(settled, limit);
+}
+
+async function fetchRecentEventsByIds(
+  relayUrls: string[],
+  ids: string[],
+  kinds: number[],
+  limit: number,
+  transport?: RelayOneShotTransport | null,
+) {
+  const normalizedIds = normalizeEventIds(ids);
+  const normalizedRelays = normalizeRelayUrls(relayUrls);
+
+  if (normalizedIds.length === 0 || normalizedRelays.length === 0) {
+    return [];
+  }
+
+  const settled = await Promise.allSettled(
+    normalizedRelays.map((relayUrl) =>
+      requestEvents(relayUrl, {
+        kinds,
+        ids: normalizedIds,
+        limit,
+      }, transport),
+    ),
+  );
+
+  return mergeAndLimitEvents(settled, limit);
+}
+
+async function fetchRecentEventsByTagValues(
+  relayUrls: string[],
+  tagName: "p" | "e" | "a",
+  tagValues: string[],
+  kinds: number[],
+  limit: number,
+  transport?: RelayOneShotTransport | null,
+) {
+  const normalizedRelays = normalizeRelayUrls(relayUrls);
+
+  if (normalizedRelays.length === 0 || tagValues.length === 0) {
+    return [];
+  }
+
+  const tagFilterValues = tagName === "p"
+    ? [
+        ...new Set(
+          tagValues
+            .map((value) => normalizeHexPubkey(value))
+            .filter(Boolean),
+        ),
+      ]
+    : [...new Set(tagValues.map((value) => value.trim()).filter(Boolean))];
+
+  if (tagFilterValues.length === 0) {
+    return [];
+  }
+
+  const filter: RelayFilter = {
+    kinds,
+    limit,
+  };
+  filter[`#${tagName}` as "#p" | "#e" | "#a"] = tagFilterValues;
+
+  const settled = await Promise.allSettled(
+    normalizedRelays.map((relayUrl) =>
+      requestEvents(relayUrl, filter, transport),
     ),
   );
 
@@ -257,11 +445,7 @@ function mergeAndLimitEvents(
 
 function requestReplaceableEvent(
   relayUrl: string,
-  filter: {
-    kinds: number[];
-    authors: string[];
-    limit: number;
-  },
+  filter: RelayFilter,
   transport?: RelayOneShotTransport | null,
 ) {
   return requestThroughTransport({
@@ -373,11 +557,7 @@ function requestReplaceableEvent(
 
 function requestEvents(
   relayUrl: string,
-  filter: {
-    kinds: number[];
-    authors: string[];
-    limit: number;
-  },
+  filter: RelayFilter,
   transport?: RelayOneShotTransport | null,
 ) {
   return requestThroughTransport({
@@ -494,19 +674,11 @@ async function requestThroughTransport<T>(args: {
   transportRequest?:
     | ((
         relayUrl: string,
-        filters: {
-          kinds: number[];
-          authors: string[];
-          limit?: number;
-        }[],
+        filters: RelayFilter[],
         timeoutMs?: number,
       ) => Promise<T>)
     | null;
-  filters: {
-    kinds: number[];
-    authors: string[];
-    limit?: number;
-  }[];
+  filters: RelayFilter[];
   timeoutMs: number;
   fallback: () => Promise<T>;
   normalizeTransportError: (error: unknown) => Error;
@@ -559,6 +731,54 @@ function createSubscriptionId() {
   }
 
   return `contacts-${Math.random().toString(16).slice(2)}`;
+}
+
+function normalizeEventIds(ids: string[]) {
+  return [
+    ...new Set(
+      ids
+        .map((eventId) => eventId.trim().toLowerCase())
+        .filter((eventId) => eventId.length === 64 && /^[0-9a-f]+$/u.test(eventId)),
+    ),
+  ];
+}
+
+function extractLikeReactionTargetIds(events: NostrEvent[]) {
+  const targetIds: string[] = [];
+
+  for (const event of events) {
+    if (!isLikeReactionEvent(event)) {
+      continue;
+    }
+
+    const targetId = findReactionTargetId(event);
+
+    if (!targetId || targetIds.includes(targetId)) {
+      continue;
+    }
+
+    targetIds.push(targetId);
+  }
+
+  return targetIds;
+}
+
+function isLikeReactionEvent(event: NostrEvent) {
+  return event.kind === 7 && (event.content === "" || event.content === "+");
+}
+
+function findReactionTargetId(event: NostrEvent) {
+  const taggedId = [...event.tags]
+    .reverse()
+    .find((tag) => tag[0] === "e")
+    ?.at(1);
+
+  if (!taggedId) {
+    return null;
+  }
+
+  const [normalizedTargetId] = normalizeEventIds([taggedId]);
+  return normalizedTargetId ?? null;
 }
 
 function parseReplaceableRelayMessage(data: string) {

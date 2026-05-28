@@ -7,8 +7,10 @@ import { profilesEqual } from "./profilePresentation";
 export function buildVisibleTimeline(args: {
   accountTimeline: TimelineItem[];
   followTimeline: TimelineItem[];
+  notifyTimeline: TimelineItem[];
   overlayEventIds: string[];
   profileSummaries: Map<string, TimelineProfile>;
+  reactionTimeline: TimelineItem[];
   timeline: TimelineItem[];
   timelineLimit: number;
   timelineView: TimelineView;
@@ -21,6 +23,18 @@ export function buildVisibleTimeline(args: {
           args.accountTimeline,
           args.timelineLimit,
         ),
+        args.profileSummaries,
+      );
+
+    case "reaction":
+      return attachProfilesToTimeline(
+        args.reactionTimeline.slice(0, args.timelineLimit),
+        args.profileSummaries,
+      );
+
+    case "notify":
+      return attachProfilesToTimeline(
+        args.notifyTimeline.slice(0, args.timelineLimit),
         args.profileSummaries,
       );
 
@@ -74,12 +88,17 @@ export function buildAuxiliaryTimeline(args: {
   for (const event of args.events) {
     const normalizedPubkey = normalizeHexPubkey(event.pubkey);
     const existing = referenceById.get(event.id);
-    const replyContextPubkeys = findReplyContextPubkeys(event, referenceById);
-    const replyTargetPubkey = findReplyTargetPubkey(
-      event,
-      referenceById,
-      replyContextPubkeys,
-    );
+    const supportsReplyContext = event.kind === 1;
+    const replyContextPubkeys = supportsReplyContext
+      ? findReplyContextPubkeys(event, referenceById)
+      : [];
+    const replyTargetPubkey = supportsReplyContext
+      ? findReplyTargetPubkey(
+          event,
+          referenceById,
+          replyContextPubkeys,
+        )
+      : null;
     const replyTargetProfile = replyTargetPubkey
       ? args.profileSummaries.get(replyTargetPubkey) ?? existing?.replyTargetProfile ?? null
       : null;
@@ -107,7 +126,7 @@ export function buildAuxiliaryTimeline(args: {
       createdAt: event.created_at,
       kind: event.kind,
       content: event.content,
-      isReply: event.tags.some((tag) => tag[0] === "e" || tag[0] === "a"),
+      isReply: supportsReplyContext && event.tags.some((tag) => tag[0] === "e" || tag[0] === "a"),
       replyTargetPubkey,
       replyTargetProfile,
       replyContextPubkeys,
@@ -158,6 +177,18 @@ export function mergeAuxiliaryTimeline(args: {
         ? item.replyContextPubkeys
         : currentItem?.replyContextPubkeys ?? [];
     const isReply = item.isReply || currentItem?.isReply || false;
+    const notifyActorPubkey =
+      currentItem?.notifyActorPubkey ?? item.notifyActorPubkey ?? null;
+    const notifyActorProfile = notifyActorPubkey
+      ? args.profileSummaries.get(notifyActorPubkey)
+        ?? currentItem?.notifyActorProfile
+        ?? item.notifyActorProfile
+        ?? null
+      : null;
+    const notifyReactionContent =
+      currentItem?.notifyReactionContent ?? item.notifyReactionContent ?? null;
+    const notifyTargetEventId =
+      currentItem?.notifyTargetEventId ?? item.notifyTargetEventId ?? null;
     const mergedItem: TimelineItem = {
       ...item,
       isReply,
@@ -165,6 +196,10 @@ export function mergeAuxiliaryTimeline(args: {
       replyTargetProfile: latestReplyTargetProfile,
       replyContextPubkeys,
       profile: latestProfile,
+      notifyActorPubkey,
+      notifyActorProfile,
+      notifyReactionContent,
+      notifyTargetEventId,
     };
 
     items.set(
@@ -181,6 +216,10 @@ export function mergeAuxiliaryTimeline(args: {
       && replyContextPubkeysEqual(currentItem.replyContextPubkeys, mergedItem.replyContextPubkeys)
       && currentItem.likeCount === mergedItem.likeCount
       && profilesEqual(currentItem.profile, mergedItem.profile)
+      && currentItem.notifyActorPubkey === mergedItem.notifyActorPubkey
+      && profilesEqual(currentItem.notifyActorProfile, mergedItem.notifyActorProfile)
+      && currentItem.notifyReactionContent === mergedItem.notifyReactionContent
+      && currentItem.notifyTargetEventId === mergedItem.notifyTargetEventId
         ? currentItem
         : mergedItem,
     );
@@ -200,10 +239,14 @@ export function attachProfilesToTimeline(
     const latestReplyTargetProfile = item.replyTargetPubkey
       ? profileSummaries.get(item.replyTargetPubkey) ?? item.replyTargetProfile
       : null;
+    const latestNotifyActorProfile = item.notifyActorPubkey
+      ? profileSummaries.get(item.notifyActorPubkey) ?? item.notifyActorProfile ?? null
+      : null;
 
     if (
       profilesEqual(item.profile, latestProfile)
       && profilesEqual(item.replyTargetProfile, latestReplyTargetProfile)
+      && profilesEqual(item.notifyActorProfile, latestNotifyActorProfile)
     ) {
       return item;
     }
@@ -212,6 +255,7 @@ export function attachProfilesToTimeline(
       ...item,
       profile: latestProfile,
       replyTargetProfile: latestReplyTargetProfile,
+      notifyActorProfile: latestNotifyActorProfile,
     };
   });
 }
@@ -246,6 +290,10 @@ export function timelineItemsEqual(left: TimelineItem[], right: TimelineItem[]) 
       )
       || leftItem.likeCount !== rightItem.likeCount
       || !profilesEqual(leftItem.profile, rightItem.profile)
+      || leftItem.notifyActorPubkey !== rightItem.notifyActorPubkey
+      || !profilesEqual(leftItem.notifyActorProfile, rightItem.notifyActorProfile)
+      || leftItem.notifyReactionContent !== rightItem.notifyReactionContent
+      || leftItem.notifyTargetEventId !== rightItem.notifyTargetEventId
     ) {
       return false;
     }
@@ -389,12 +437,52 @@ export function buildTimelineEmptyMessage(
   timelineView: TimelineView,
   followLoadState: AuxiliaryLoadState,
   accountLoadState: AuxiliaryLoadState,
+  notifyLoadState: AuxiliaryLoadState,
+  reactionLoadState: AuxiliaryLoadState,
   followCount: number,
+  notifyCount: number,
+  reactionCount: number,
   accountError: string | null,
   followError: string | null,
+  notifyError: string | null,
+  reactionError: string | null,
 ) {
   if (timelineView === "relay") {
     return "直近のポストはありません。";
+  }
+
+  if (timelineView === "notify") {
+    if (notifyCount > 0) {
+      return "直近の通知はありません。";
+    }
+
+    switch (notifyLoadState) {
+      case "loading":
+        return "通知読み込み中...";
+
+      case "error":
+        return notifyError ?? "notify を取得できませんでした。";
+
+      default:
+        return "直近の通知はありません。";
+    }
+  }
+
+  if (timelineView === "reaction") {
+    if (reactionCount > 0) {
+      return "直近のポストはありません。";
+    }
+
+    switch (reactionLoadState) {
+      case "loading":
+        return "リアクション読み込み中...";
+
+      case "error":
+        return reactionError ?? "reaction を取得できませんでした。";
+
+      default:
+        return "直近のリアクションはありません。";
+    }
   }
 
   if (timelineView === "account") {

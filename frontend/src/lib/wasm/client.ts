@@ -37,6 +37,10 @@ export type TimelineItem = {
   replyContextPubkeys: string[];
   likeCount: number;
   profile: TimelineProfile | null;
+  notifyActorPubkey?: string | null;
+  notifyActorProfile?: TimelineProfile | null;
+  notifyReactionContent?: string | null;
+  notifyTargetEventId?: string | null;
 };
 
 export type TimelineProfile = {

@@ -1,6 +1,10 @@
 # Yodaka
 
 Rust/WASM + React/Vite で構築している Web Nostr クライアントです。
+[nighthawk.sabotenism.cc/nostr/](https://nighthawk.sabotenism.cc/nostr/)
+
+キーマイナーも搭載！
+[nighthawk.sabotenism.cc/nostr/miner](https://nighthawk.sabotenism.cc/nostr/miner)
 
 ## 前提
 

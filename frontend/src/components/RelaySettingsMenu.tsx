@@ -10,9 +10,12 @@ import type { RelaySetting } from "../lib/nostr/storage";
 import { RelaySettingItem } from "./RelaySettingItem";
 
 type RelaySettingsMenuProps = {
+  accountTabEnabled: boolean;
   developerModeEnabled: boolean;
   keyMinerOpen: boolean;
+  notifyTabEnabled: boolean;
   profileImagesEnabled: boolean;
+  reactionTabEnabled: boolean;
   relayBootstrapDeferred: boolean;
   relayDiagnostics: Record<string, RelayDiagnosticState>;
   relayDraftUrl: string;
@@ -21,9 +24,12 @@ type RelaySettingsMenuProps = {
   relayStatus: RelayCoordinatorStatus;
   settingsMenuRef: Ref<HTMLDetailsElement>;
   onDeveloperModeToggle: ChangeEventHandler<HTMLInputElement>;
+  onAccountTabToggle: ChangeEventHandler<HTMLInputElement>;
   onClearLocalData: () => void;
   onKeyMinerToggle: () => void;
+  onNotifyTabToggle: ChangeEventHandler<HTMLInputElement>;
   onProfileImagesToggle: ChangeEventHandler<HTMLInputElement>;
+  onReactionTabToggle: ChangeEventHandler<HTMLInputElement>;
   onRelayAdd: FormEventHandler<HTMLFormElement>;
   onRelayDraftChange: ChangeEventHandler<HTMLInputElement>;
   onRelayMove: (url: string, direction: -1 | 1) => void;
@@ -63,6 +69,75 @@ export function RelaySettingsMenu(props: RelaySettingsMenuProps) {
         </div>
 
         <div className="settings-menu-section">
+          <div className="settings-menu-row">
+            <span className="settings-menu-label">Account タブ</span>
+            <label
+              className={`chip-toggle settings-chip-toggle${
+                props.accountTabEnabled ? " chip-toggle-active" : ""
+              }`}
+              title="Account タブ"
+            >
+              <input
+                className="chip-toggle-input"
+                type="checkbox"
+                checked={props.accountTabEnabled}
+                onChange={props.onAccountTabToggle}
+                aria-label="Account タブ"
+              />
+              <span className="chip-toggle-icon" aria-hidden="true">
+                {props.accountTabEnabled ? "◉" : "○"}
+              </span>
+              <span className="chip-toggle-label">
+                {props.accountTabEnabled ? "ON" : "OFF"}
+              </span>
+            </label>
+          </div>
+          <div className="settings-menu-row">
+            <span className="settings-menu-label">Notify タブ</span>
+            <label
+              className={`chip-toggle settings-chip-toggle${
+                props.notifyTabEnabled ? " chip-toggle-active" : ""
+              }`}
+              title="Notify タブ"
+            >
+              <input
+                className="chip-toggle-input"
+                type="checkbox"
+                checked={props.notifyTabEnabled}
+                onChange={props.onNotifyTabToggle}
+                aria-label="Notify タブ"
+              />
+              <span className="chip-toggle-icon" aria-hidden="true">
+                {props.notifyTabEnabled ? "◉" : "○"}
+              </span>
+              <span className="chip-toggle-label">
+                {props.notifyTabEnabled ? "ON" : "OFF"}
+              </span>
+            </label>
+          </div>
+          <div className="settings-menu-row">
+            <span className="settings-menu-label">Reaction タブ</span>
+            <label
+              className={`chip-toggle settings-chip-toggle${
+                props.reactionTabEnabled ? " chip-toggle-active" : ""
+              }`}
+              title="Reaction タブ"
+            >
+              <input
+                className="chip-toggle-input"
+                type="checkbox"
+                checked={props.reactionTabEnabled}
+                onChange={props.onReactionTabToggle}
+                aria-label="Reaction タブ"
+              />
+              <span className="chip-toggle-icon" aria-hidden="true">
+                {props.reactionTabEnabled ? "◉" : "○"}
+              </span>
+              <span className="chip-toggle-label">
+                {props.reactionTabEnabled ? "ON" : "OFF"}
+              </span>
+            </label>
+          </div>
           <div className="settings-menu-row">
             <span className="settings-menu-label">アイコン画像取得</span>
             <label

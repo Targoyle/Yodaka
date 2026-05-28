@@ -3,6 +3,10 @@ import { normalizeHexPubkey } from "./pubkey";
 export type RelayFilter = {
   kinds?: number[];
   authors?: string[];
+  ids?: string[];
+  "#p"?: string[];
+  "#e"?: string[];
+  "#a"?: string[];
   since?: number;
   until?: number;
   limit?: number;
@@ -1190,6 +1194,38 @@ export function matchesRelayFilter(event: NostrEvent, filter: RelayFilter) {
     return false;
   }
 
+  if (
+    filter.ids &&
+    filter.ids.length > 0 &&
+    !filter.ids.some((eventId) => eventId.trim().toLowerCase() === event.id.toLowerCase())
+  ) {
+    return false;
+  }
+
+  if (
+    filter["#p"] &&
+    filter["#p"].length > 0 &&
+    !matchesEventTagFilter(event, "p", filter["#p"], normalizeTaggedPubkey)
+  ) {
+    return false;
+  }
+
+  if (
+    filter["#e"] &&
+    filter["#e"].length > 0 &&
+    !matchesEventTagFilter(event, "e", filter["#e"], normalizeEventId)
+  ) {
+    return false;
+  }
+
+  if (
+    filter["#a"] &&
+    filter["#a"].length > 0 &&
+    !matchesEventTagFilter(event, "a", filter["#a"], normalizeTagValue)
+  ) {
+    return false;
+  }
+
   if (filter.since !== undefined && event.created_at < filter.since) {
     return false;
   }
@@ -1199,6 +1235,46 @@ export function matchesRelayFilter(event: NostrEvent, filter: RelayFilter) {
   }
 
   return true;
+}
+
+function matchesEventTagFilter(
+  event: NostrEvent,
+  tagName: string,
+  expectedValues: string[],
+  normalizeValue: (value: string) => string | null,
+) {
+  const normalizedExpectedValues = expectedValues
+    .map(normalizeValue)
+    .filter((value): value is string => value !== null);
+
+  if (normalizedExpectedValues.length === 0) {
+    return false;
+  }
+
+  return event.tags.some((tag) => {
+    if (tag[0] !== tagName) {
+      return false;
+    }
+
+    const taggedValue = normalizeValue(tag[1] ?? "");
+    return taggedValue ? normalizedExpectedValues.includes(taggedValue) : false;
+  });
+}
+
+function normalizeTaggedPubkey(value: string) {
+  return normalizeHexPubkey(value);
+}
+
+function normalizeEventId(value: string) {
+  const normalizedValue = value.trim().toLowerCase();
+  return normalizedValue.length === 64 && /^[0-9a-f]+$/u.test(normalizedValue)
+    ? normalizedValue
+    : null;
+}
+
+function normalizeTagValue(value: string) {
+  const normalizedValue = value.trim();
+  return normalizedValue === "" ? null : normalizedValue;
 }
 
 export function inspectRelayMessage(data: string): RelayMessageInspection {

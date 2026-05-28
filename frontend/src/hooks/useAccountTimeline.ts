@@ -31,6 +31,7 @@ type UseAccountTimelineArgs = {
   relayBootstrapDeferred: boolean;
   relayConfigurationKey: string;
   relayCoordinatorRef: MutableRefObject<RelayCoordinator | null>;
+  readyReadRelayCount: number;
   signerAvailable: boolean;
   timeline: TimelineItem[];
   timelineLimit: number;
@@ -44,6 +45,7 @@ export function useAccountTimeline(args: UseAccountTimelineArgs) {
   const [accountSourceKey, setAccountSourceKey] = useState<string | null>(null);
   const [accountError, setAccountError] = useState<string | null>(null);
   const [accountTimeline, setAccountTimeline] = useState<TimelineItem[]>([]);
+  const [retryRevision, setRetryRevision] = useState(0);
 
   const ensureViewerPubkeyRef = useRef(args.ensureViewerPubkey);
   const ingestOverlayEventsRef = useRef(args.ingestOverlayEvents);
@@ -71,6 +73,20 @@ export function useAccountTimeline(args: UseAccountTimelineArgs) {
     }
 
     let cancelled = false;
+    let retryTimeoutId: number | null = null;
+
+    if (!args.relayCoordinatorRef.current || args.readyReadRelayCount === 0) {
+      retryTimeoutId = window.setTimeout(() => {
+        setRetryRevision((current) => current + 1);
+      }, 1_000);
+
+      return () => {
+        cancelled = true;
+        if (retryTimeoutId !== null) {
+          window.clearTimeout(retryTimeoutId);
+        }
+      };
+    }
 
     async function loadAccount() {
       if (args.isResolvingSignerPubkey) {
@@ -102,7 +118,39 @@ export function useAccountTimeline(args: UseAccountTimelineArgs) {
         const pubkey = await ensureViewerPubkeyRef.current(args.manualPubkey);
         const accountRelayUrls = loadAccountRelayUrls(args.readRelayUrls);
         const sourceKey = `${accountRelayUrls.join(",")}:${pubkey}`;
-        const relayTransport = args.relayCoordinatorRef.current;
+        const relayTransport = {
+          requestTemporaryEvents: async (
+            relayUrl: string,
+            filters: Parameters<RelayCoordinator["requestTemporaryEvents"]>[1],
+            timeoutMs?: number,
+          ) => {
+            const coordinator = args.relayCoordinatorRef.current;
+
+            if (!coordinator) {
+              return [];
+            }
+
+            try {
+              return await coordinator.requestTemporaryEvents(
+                relayUrl,
+                filters,
+                timeoutMs,
+              );
+            } catch (error) {
+              if (
+                error instanceof Error
+                && (
+                  error.message === "relay is not connected"
+                  || error.message === "relay client が初期化されていません"
+                )
+              ) {
+                return [];
+              }
+
+              throw error;
+            }
+          },
+        };
 
         if (import.meta.env.DEV && import.meta.env.MODE !== "test") {
           console.info("[account:load]", {
@@ -175,6 +223,9 @@ export function useAccountTimeline(args: UseAccountTimelineArgs) {
 
     return () => {
       cancelled = true;
+      if (retryTimeoutId !== null) {
+        window.clearTimeout(retryTimeoutId);
+      }
     };
   }, [
     accountSourceKey,
@@ -185,11 +236,13 @@ export function useAccountTimeline(args: UseAccountTimelineArgs) {
     args.relayBootstrapDeferred,
     args.relayConfigurationKey,
     args.relayCoordinatorRef,
+    args.readyReadRelayCount,
     args.signerAvailable,
     args.timelineLimit,
     args.timelineRef,
     args.timelineView,
     args.viewerPubkey,
+    retryRevision,
   ]);
 
   useEffect(() => {
