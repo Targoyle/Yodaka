@@ -35,6 +35,7 @@ export type RelayDebugEventType =
   | "socket_open"
   | "socket_error"
   | "socket_close"
+  | "recv_auth"
   | "send_req"
   | "send_event"
   | "send_close"
@@ -90,6 +91,7 @@ export type RelayClientOptions = {
   buildFeedFilters: () => RelayFilter[] | Promise<RelayFilter[]>;
   onEvent: (context: RelayEventContext) => void | Promise<void>;
   onEose?: (context: RelayEoseContext) => void | Promise<void>;
+  onAuthChallenge?: (challenge: string) => void;
   onNotice?: (message: string) => void;
   onClosed?: (context: RelayClosedContext) => void;
   onStatus?: (status: RelayStatus) => void;
@@ -106,6 +108,10 @@ type RelayMessage =
   | {
       type: "EOSE";
       subscriptionId: string;
+    }
+  | {
+      type: "AUTH";
+      challenge: string;
     }
   | {
       type: "NOTICE";
@@ -648,6 +654,14 @@ export class RelayClient {
           detail: message.message,
         });
         this.options.onNotice?.(message.message);
+        return;
+
+      case "AUTH":
+        this.emitDebug({
+          type: "recv_auth",
+          detail: "NIP-42 AUTH challenge を受信しました",
+        });
+        this.options.onAuthChallenge?.(message.challenge);
         return;
 
       case "CLOSED": {
@@ -1371,6 +1385,16 @@ export function inspectRelayMessage(data: string): RelayMessageInspection {
         message: {
           type: "NOTICE",
           message: first,
+        },
+        diagnostic: null,
+      };
+    }
+
+    if (kind === "AUTH" && typeof first === "string") {
+      return {
+        message: {
+          type: "AUTH",
+          challenge: first,
         },
         diagnostic: null,
       };

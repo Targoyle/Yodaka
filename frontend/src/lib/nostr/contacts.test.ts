@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-  DIRECT_FALLBACK_RELAY_TRANSPORT,
   buildRelayAuthorMap,
   extractFollowTargets,
   fetchRecentNotifyEventsByPubkey,
@@ -9,6 +8,10 @@ import {
   fetchRecentNotesByAuthors,
   normalizeRelayUrls,
 } from "./contacts";
+import {
+  requestDirectEvents,
+  requestDirectLatestReplaceableEvent,
+} from "./directRelayFallback";
 import type { RelayFilter } from "./relay";
 
 type Listener = (event: unknown) => void;
@@ -173,7 +176,7 @@ describe("fetchRecentNotesByAuthors", () => {
       ["wss://yabu.me", "wss://nos.lol"],
       ["author-a"],
       20,
-      DIRECT_FALLBACK_RELAY_TRANSPORT,
+      createDirectFallbackTransport(),
     );
 
     const [firstSocket, secondSocket] = MockWebSocket.instances;
@@ -192,7 +195,7 @@ describe("fetchRecentNotesByAuthors", () => {
       ["wss://yabu.me", "wss://nos.lol"],
       ["author-a"],
       20,
-      DIRECT_FALLBACK_RELAY_TRANSPORT,
+      createDirectFallbackTransport(),
     );
 
     const [firstSocket, secondSocket] = MockWebSocket.instances;
@@ -285,32 +288,6 @@ describe("fetchRecentNotesByAuthors", () => {
     ).rejects.toThrow("relay から投稿を取得できませんでした: relay one-shot transport is not configured");
 
     expect(MockWebSocket.instances).toHaveLength(0);
-  });
-
-  it("allowDirectFallback が有効なら未接続エラー時に direct WS へフォールバックする", async () => {
-    const requestTemporaryEvents = vi
-      .fn()
-      .mockRejectedValue(new Error("relay is not connected"));
-
-    const promise = fetchRecentNotesByAuthors(
-      ["wss://yabu.me"],
-      ["abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"],
-      20,
-      {
-        allowDirectFallback: true,
-        requestTemporaryEvents,
-      },
-    );
-
-    await waitForSocket();
-
-    const [socket] = MockWebSocket.instances;
-    socket.emitOpen();
-    const subscriptionId = sentFrames(socket)[0]?.[1] as string;
-    socket.emitMessage(JSON.stringify(["EOSE", subscriptionId]));
-
-    await expect(promise).resolves.toEqual([]);
-    expect(requestTemporaryEvents).toHaveBeenCalledTimes(1);
   });
 
   it("transport がある場合は既定で direct WS へフォールバックしない", async () => {
@@ -692,14 +669,37 @@ function sentFrames(socket: MockWebSocket): RelayFrame[] {
   return socket.sent.map((message) => JSON.parse(message) as RelayFrame);
 }
 
-async function waitForSocket() {
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    if (MockWebSocket.instances.length > 0) {
-      return;
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-
-  throw new Error("MockWebSocket が作成されませんでした");
+function createDirectFallbackTransport() {
+  return {
+    requestTemporaryEvents: (
+      relayUrl: string,
+      filters: RelayFilter[],
+      timeoutMs?: number,
+    ) =>
+      requestDirectEvents(
+        relayUrl,
+        filters[0] ?? {},
+        timeoutMs ?? 8_000,
+        {
+          timeout: "投稿取得がタイムアウトしました",
+          failed: "投稿取得に失敗しました",
+          disconnected: "投稿取得中に relay から切断されました",
+        },
+      ),
+    requestTemporaryLatestEvent: (
+      relayUrl: string,
+      filters: RelayFilter[],
+      timeoutMs?: number,
+    ) =>
+      requestDirectLatestReplaceableEvent(
+        relayUrl,
+        filters[0] ?? {},
+        timeoutMs ?? 8_000,
+        {
+          timeout: "follow 一覧の取得がタイムアウトしました",
+          failed: "follow 一覧の取得に失敗しました",
+          disconnected: "follow 一覧の取得中に relay から切断されました",
+        },
+      ),
+  };
 }

@@ -4,10 +4,6 @@ import {
 } from "./relay";
 import { normalizeHexPubkey } from "./pubkey";
 import {
-  requestDirectEvents,
-  requestDirectLatestReplaceableEvent,
-} from "./directRelayFallback";
-import {
   normalizeRelayUrl,
   normalizeRelayUrls,
 } from "./relayUrl";
@@ -21,7 +17,6 @@ export type FollowTarget = {
 };
 
 export type RelayOneShotTransport = {
-  allowDirectFallback?: boolean;
   requestTemporaryLatestEvent?: (
     relayUrl: string,
     filters: RelayFilter[],
@@ -32,10 +27,6 @@ export type RelayOneShotTransport = {
     filters: RelayFilter[],
     timeoutMs?: number,
   ) => Promise<NostrEvent[]>;
-};
-
-export const DIRECT_FALLBACK_RELAY_TRANSPORT: RelayOneShotTransport = {
-  allowDirectFallback: true,
 };
 
 export type NotifyFetchResult = {
@@ -450,8 +441,6 @@ function requestReplaceableEvent(
   filter: RelayFilter,
   transport?: RelayOneShotTransport | null,
 ) {
-  const allowDirectFallback = transport?.allowDirectFallback === true;
-
   return requestThroughTransport({
     relayUrl,
     transportRequest: transport?.requestTemporaryLatestEvent
@@ -464,18 +453,7 @@ function requestReplaceableEvent(
       : undefined,
     filters: [filter],
     timeoutMs: REQUEST_TIMEOUT_MS,
-    allowDirectFallback,
     unavailableResult: null,
-    fallback: () => requestDirectLatestReplaceableEvent(
-      relayUrl,
-      filter,
-      REQUEST_TIMEOUT_MS,
-      {
-        timeout: "follow 一覧の取得がタイムアウトしました",
-        failed: "follow 一覧の取得に失敗しました",
-        disconnected: "follow 一覧の取得中に relay から切断されました",
-      },
-    ),
     normalizeTransportError: (error) =>
       normalizeTransportErrorMessage(error, {
         timeout: "follow 一覧の取得がタイムアウトしました",
@@ -489,8 +467,6 @@ function requestEvents(
   filter: RelayFilter,
   transport?: RelayOneShotTransport | null,
 ) {
-  const allowDirectFallback = transport?.allowDirectFallback === true;
-
   return requestThroughTransport({
     relayUrl,
     transportRequest: transport?.requestTemporaryEvents
@@ -503,18 +479,7 @@ function requestEvents(
       : undefined,
     filters: [filter],
     timeoutMs: REQUEST_TIMEOUT_MS,
-    allowDirectFallback,
     unavailableResult: [],
-    fallback: () => requestDirectEvents(
-      relayUrl,
-      filter,
-      REQUEST_TIMEOUT_MS,
-      {
-        timeout: "投稿取得がタイムアウトしました",
-        failed: "投稿取得に失敗しました",
-        disconnected: "投稿取得中に relay から切断されました",
-      },
-    ),
     normalizeTransportError: (error) =>
       normalizeTransportErrorMessage(error, {
         timeout: "投稿取得がタイムアウトしました",
@@ -534,16 +499,10 @@ async function requestThroughTransport<T>(args: {
     | null;
   filters: RelayFilter[];
   timeoutMs: number;
-  allowDirectFallback: boolean;
   unavailableResult: T;
-  fallback: () => Promise<T>;
   normalizeTransportError: (error: unknown) => Error;
 }) {
   if (!args.transportRequest) {
-    if (args.allowDirectFallback) {
-      return args.fallback();
-    }
-
     throw new Error("relay one-shot transport is not configured");
   }
 
@@ -551,7 +510,7 @@ async function requestThroughTransport<T>(args: {
     return await args.transportRequest(args.relayUrl, args.filters, args.timeoutMs);
   } catch (error) {
     if (isTransportUnavailableError(error)) {
-      return args.allowDirectFallback ? args.fallback() : args.unavailableResult;
+      return args.unavailableResult;
     }
 
     throw args.normalizeTransportError(error);

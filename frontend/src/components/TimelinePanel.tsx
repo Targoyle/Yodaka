@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
-import type { TimelineView } from "../app/types";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { AuxiliaryTimelineDiagnostic, TimelineView } from "../app/types";
 import type { ReactionIntent } from "../lib/nostr/reaction";
+import { formatRecordedAt } from "../lib/ui/formatters";
 import type { TimelineItem } from "../lib/wasm/client";
 import { TimelineCard } from "./TimelineCard";
 
@@ -8,17 +9,22 @@ type TimelinePanelProps = {
   accountTabEnabled: boolean;
   canOpenPersonalTimeline: boolean;
   canSendReaction: boolean;
+  developerModeEnabled: boolean;
   emptyMessage: string;
   isProfileImageEnabled: boolean;
   isPublishing: boolean;
   notifyTabEnabled: boolean;
+  onCopyEventId: (eventId: string) => void | Promise<void>;
   pendingReactionEventIds: string[];
   readyWriteRelayCount: number;
   reactionTabEnabled: boolean;
   relayButtonTitle: string;
+  timelineDiagnostics: AuxiliaryTimelineDiagnostic[];
+  timelineReferenceItems: TimelineItem[];
   timelineView: TimelineView;
   onReact: (item: TimelineItem, reactionIntent: ReactionIntent) => void | Promise<void>;
   onTimelineViewChange: (view: TimelineView) => void | Promise<void>;
+  onViewEventJson: (item: TimelineItem) => void | Promise<void>;
   visibleTimeline: TimelineItem[];
 };
 
@@ -153,6 +159,19 @@ export function TimelinePanel(props: TimelinePanelProps) {
     timelineDisplayPaused && pausedVisibleTimeline !== null
       ? pausedVisibleTimeline
       : props.visibleTimeline;
+  const referenceById = useMemo(() => {
+    const next = new Map<string, TimelineItem>();
+
+    for (const item of props.timelineReferenceItems) {
+      next.set(item.id, item);
+    }
+
+    for (const item of displayedTimeline) {
+      next.set(item.id, item);
+    }
+
+    return next;
+  }, [displayedTimeline, props.timelineReferenceItems]);
 
   return (
     <section className="panel">
@@ -238,25 +257,45 @@ export function TimelinePanel(props: TimelinePanelProps) {
         </div>
       </div>
 
+      {props.developerModeEnabled && props.timelineDiagnostics.length > 0 ? (
+        <div className="timeline-diagnostics">
+          {props.timelineDiagnostics.map((diagnostic) => (
+            <p key={diagnostic.label} className="timeline-diagnostic-line">
+              <span className="timeline-diagnostic-label">{diagnostic.label}</span>
+              <span className="timeline-diagnostic-value">
+                {formatAuxiliaryDiagnostic(diagnostic)}
+              </span>
+            </p>
+          ))}
+        </div>
+      ) : null}
+
       {displayedTimeline.length === 0 ? (
         <p className="muted">{props.emptyMessage}</p>
       ) : (
         <ul className="list">
           {displayedTimeline.map((item) => {
             const isReactionPending = props.pendingReactionEventIds.includes(item.id);
+            const replyTargetPreviewItem = item.replyTargetEventId
+              ? referenceById.get(item.replyTargetEventId) ?? null
+              : null;
 
             return (
               <TimelineCard
                 key={item.id}
                 canSendReaction={props.canSendReaction}
+                developerModeEnabled={props.developerModeEnabled}
                 isProfileImageEnabled={props.isProfileImageEnabled}
                 isPublishing={props.isPublishing}
                 isReactionPending={isReactionPending}
                 item={item}
+                onCopyEventId={props.onCopyEventId}
                 onPauseTimelineDisplay={pauseTimelineDisplay}
                 onReact={props.onReact}
                 onResumeTimelineDisplay={resumeTimelineDisplay}
+                onViewEventJson={props.onViewEventJson}
                 readyWriteRelayCount={props.readyWriteRelayCount}
+                replyTargetPreviewItem={replyTargetPreviewItem}
                 timelineView={props.timelineView}
               />
             );
@@ -265,4 +304,41 @@ export function TimelinePanel(props: TimelinePanelProps) {
       )}
     </section>
   );
+}
+
+function formatAuxiliaryDiagnostic(diagnostic: AuxiliaryTimelineDiagnostic) {
+  const parts = [
+    formatAuxiliaryLoadStateLabel(diagnostic.loadState),
+    `read ${diagnostic.readyReadRelayCount}/${diagnostic.relayCount}`,
+    `items ${diagnostic.itemCount}`,
+  ];
+
+  if (diagnostic.summary) {
+    parts.push(diagnostic.summary);
+  }
+
+  if (diagnostic.lastFetchedAt) {
+    parts.push(formatRecordedAt(diagnostic.lastFetchedAt));
+  }
+
+  if (diagnostic.loadState === "error" && diagnostic.error) {
+    parts.push(diagnostic.error);
+  }
+
+  return parts.join(" · ");
+}
+
+function formatAuxiliaryLoadStateLabel(loadState: AuxiliaryTimelineDiagnostic["loadState"]) {
+  switch (loadState) {
+    case "waiting":
+      return "WAIT";
+    case "loading":
+      return "LOAD";
+    case "ready":
+      return "READY";
+    case "error":
+      return "ERROR";
+    default:
+      return "IDLE";
+  }
 }

@@ -7,7 +7,6 @@ export function createTemporaryRelayTransport(
   getRelayCoordinator: RelayCoordinatorGetter,
 ): RelayOneShotTransport {
   return {
-    allowDirectFallback: false,
     requestTemporaryEvents: async (relayUrl, filters, timeoutMs) => {
       const coordinator = getRelayCoordinator();
 

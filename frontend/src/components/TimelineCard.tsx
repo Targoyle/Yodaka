@@ -22,14 +22,18 @@ const MAX_REPLY_BANDS = 6;
 
 type TimelineCardProps = {
   canSendReaction: boolean;
+  developerModeEnabled: boolean;
   isPublishing: boolean;
   isProfileImageEnabled: boolean;
   isReactionPending: boolean;
   item: TimelineItem;
+  onCopyEventId: (eventId: string) => void | Promise<void>;
   onPauseTimelineDisplay: () => void;
   onReact: (item: TimelineItem, reactionIntent: ReactionIntent) => void | Promise<void>;
   onResumeTimelineDisplay: () => void;
+  onViewEventJson: (item: TimelineItem) => void | Promise<void>;
   readyWriteRelayCount: number;
+  replyTargetPreviewItem: TimelineItem | null;
   timelineView: TimelineView;
 };
 
@@ -76,13 +80,28 @@ export function TimelineCard(props: TimelineCardProps) {
     props.timelineView,
     props.item,
   );
+  const replyTargetPreviewItem = resolveReplyTargetPreviewItem(
+    props.item,
+    props.replyTargetPreviewItem,
+  );
+  const replyTargetPreviewContent = replyTargetPreviewItem
+    ? formatReplyTargetPreviewContent(replyTargetPreviewItem)
+    : null;
+  const replyTargetPreviewPubkey = replyTargetPreviewItem
+    ? formatPubkey(replyTargetPreviewItem.pubkey)
+    : null;
+  const replyTargetPreviewAuthorLabel = replyTargetPreviewItem && replyTargetPreviewPubkey
+    ? formatAuthorLabel(replyTargetPreviewItem, replyTargetPreviewPubkey)
+    : null;
   const showReactionButton = props.item.kind === 1;
   const likeCount = props.item.likeCount;
   const kusaCount = props.item.kusaCount ?? 0;
   const moreReactionCount = props.item.moreReactionCount ?? 0;
   const otherReactionSummaries = props.item.otherReactionSummaries ?? [];
   const [isMoreReactionsOpen, setIsMoreReactionsOpen] = useState(false);
+  const [isDebugMenuOpen, setIsDebugMenuOpen] = useState(false);
   const moreReactionPopoverRef = useRef<HTMLDivElement | null>(null);
+  const debugMenuRef = useRef<HTMLDivElement | null>(null);
   const reactionButtonDisabled =
     props.isPublishing
     || props.isReactionPending
@@ -120,6 +139,24 @@ export function TimelineCard(props: TimelineCardProps) {
       document.removeEventListener("pointerdown", handlePointerDown);
     };
   }, [isMoreReactionsOpen]);
+
+  useEffect(() => {
+    if (!isDebugMenuOpen || typeof document === "undefined") {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!debugMenuRef.current?.contains(event.target as Node)) {
+        setIsDebugMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [isDebugMenuOpen]);
 
   function handleMoreReactionsMouseEnter() {
     if (isCoarsePointerDevice() || otherReactionSummaries.length === 0) {
@@ -176,6 +213,16 @@ export function TimelineCard(props: TimelineCardProps) {
       {notifyLabel ? (
         <div className="muted timeline-reply-context">
           {notifyLabel}
+        </div>
+      ) : null}
+      {replyTargetPreviewItem && replyTargetPreviewContent && replyTargetPreviewAuthorLabel ? (
+        <div className="timeline-reply-preview">
+          <div className="muted timeline-reply-preview-label">
+            {`↪ ${replyTargetPreviewAuthorLabel}`}
+          </div>
+          <p className="timeline-reply-preview-text">
+            {replyTargetPreviewContent}
+          </p>
         </div>
       ) : null}
       <div className="timeline-header">
@@ -307,6 +354,47 @@ export function TimelineCard(props: TimelineCardProps) {
           <span className="timeline-meta-separator" aria-hidden="true"> </span>
           <span className="timeline-meta-time">{createdAtParts.time}</span>
         </time>
+        {props.developerModeEnabled ? (
+          <div ref={debugMenuRef} className="timeline-debug-menu-wrap">
+            <button
+              type="button"
+              className="timeline-debug-menu-button"
+              aria-expanded={isDebugMenuOpen}
+              aria-label="開発者メニュー"
+              onClick={() => {
+                setIsDebugMenuOpen((current) => !current);
+              }}
+            >
+              ...
+            </button>
+            {isDebugMenuOpen ? (
+              <div className="timeline-debug-menu-popover" role="menu">
+                <button
+                  type="button"
+                  className="timeline-debug-menu-item"
+                  role="menuitem"
+                  onClick={() => {
+                    setIsDebugMenuOpen(false);
+                    void props.onCopyEventId(props.item.id);
+                  }}
+                >
+                  ID をコピー
+                </button>
+                <button
+                  type="button"
+                  className="timeline-debug-menu-item"
+                  role="menuitem"
+                  onClick={() => {
+                    setIsDebugMenuOpen(false);
+                    void props.onViewEventJson(props.item);
+                  }}
+                >
+                  JSON を確認
+                </button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </li>
   );
@@ -399,6 +487,36 @@ function formatExpandedReactionSummary(content: string, count: number) {
   const label = formatReactionContentLabel(content);
 
   return count > 1 ? `${label} ${count}` : label;
+}
+
+function resolveReplyTargetPreviewItem(
+  item: TimelineItem,
+  replyTargetPreviewItem: TimelineItem | null,
+) {
+  if (
+    !item.replyTargetEventId
+    || !replyTargetPreviewItem
+    || replyTargetPreviewItem.id !== item.replyTargetEventId
+    || replyTargetPreviewItem.id === item.id
+  ) {
+    return null;
+  }
+
+  return replyTargetPreviewItem;
+}
+
+function formatReplyTargetPreviewContent(item: TimelineItem) {
+  const rawContent =
+    item.kind === 7
+      ? formatReactionContentLabel(item.content)
+      : item.content;
+  const normalized = rawContent.replace(/\s+/g, " ").trim();
+
+  if (!normalized) {
+    return null;
+  }
+
+  return normalized.slice(0, 140);
 }
 
 function isCoarsePointerDevice() {

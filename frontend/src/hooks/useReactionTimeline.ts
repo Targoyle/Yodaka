@@ -6,7 +6,11 @@ import {
   useState,
   type MutableRefObject,
 } from "react";
-import type { AuxiliaryLoadState, TimelineView } from "../app/types";
+import type {
+  AuxiliaryLoadState,
+  AuxiliaryTimelineDiagnostic,
+  TimelineView,
+} from "../app/types";
 import {
   fetchRecentReactionNotesByAuthors,
 } from "../lib/nostr/contacts";
@@ -31,6 +35,7 @@ type UseReactionTimelineArgs = {
   markSignerUnavailable: () => void;
   profileSummariesRef: MutableRefObject<Map<string, TimelineProfile>>;
   readRelayUrls: string[];
+  reactionTabEnabled: boolean;
   relayBootstrapDeferred: boolean;
   relayConfigurationKey: string;
   relayCoordinatorRef: MutableRefObject<RelayCoordinator | null>;
@@ -48,8 +53,18 @@ export function useReactionTimeline(args: UseReactionTimelineArgs) {
   const [reactionError, setReactionError] = useState<string | null>(null);
   const [reactionTimeline, setReactionTimeline] = useState<TimelineItem[]>([]);
   const [reactionTargetIds, setReactionTargetIds] = useState<string[]>([]);
+  const [reactionFetchMeta, setReactionFetchMeta] = useState<{
+    targetCount: number;
+    lastFetchedAt: number | null;
+  }>({
+    targetCount: 0,
+    lastFetchedAt: null,
+  });
+  const shouldPrefetchReaction =
+    args.reactionTabEnabled
+    && Boolean(args.viewerPubkey);
   const oneShotTransport = useTemporaryRelayTransport({
-    active: args.timelineView === "reaction",
+    active: args.timelineView === "reaction" || shouldPrefetchReaction,
     relayBootstrapDeferred: args.relayBootstrapDeferred,
     relayCoordinatorRef: args.relayCoordinatorRef,
     readyReadRelayCount: args.readyReadRelayCount,
@@ -82,7 +97,7 @@ export function useReactionTimeline(args: UseReactionTimelineArgs) {
       return;
     }
 
-    if (args.timelineView !== "reaction") {
+    if (args.timelineView !== "reaction" && !shouldPrefetchReaction) {
       return;
     }
 
@@ -184,6 +199,10 @@ export function useReactionTimeline(args: UseReactionTimelineArgs) {
 
           return timelineItemsEqual(current, next) ? current : next;
         });
+        setReactionFetchMeta({
+          targetCount: nextTargetIds.length,
+          lastFetchedAt: Date.now(),
+        });
         setReactionLoadState("ready");
       } catch (error) {
         if (cancelled) {
@@ -208,6 +227,7 @@ export function useReactionTimeline(args: UseReactionTimelineArgs) {
     args.autoSignerPromptBlocked,
     args.isResolvingSignerPubkey,
     args.manualPubkey,
+    args.reactionTabEnabled,
     args.relayBootstrapDeferred,
     args.relayConfigurationKey,
     args.signerAvailable,
@@ -218,6 +238,7 @@ export function useReactionTimeline(args: UseReactionTimelineArgs) {
     accountRelayUrls,
     oneShotTransport.ready,
     oneShotTransport.relayTransport,
+    shouldPrefetchReaction,
   ]);
 
   useEffect(() => {
@@ -258,6 +279,10 @@ export function useReactionTimeline(args: UseReactionTimelineArgs) {
     setReactionError(null);
     setReactionTimeline([]);
     setReactionTargetIds([]);
+    setReactionFetchMeta({
+      targetCount: 0,
+      lastFetchedAt: null,
+    });
   }, []);
 
   function primeReactionLoad() {
@@ -299,15 +324,45 @@ export function useReactionTimeline(args: UseReactionTimelineArgs) {
 
     setReactionLoadState((current) => (current === "idle" ? "ready" : current));
     setReactionError(null);
+    setReactionFetchMeta({
+      targetCount: localReactionTargetIdsRef.current.length,
+      lastFetchedAt: Date.now(),
+    });
   }, [
     args.profileSummariesRef,
     args.timeline,
     args.timelineLimit,
   ]);
 
+  const reactionDiagnostic = useMemo<AuxiliaryTimelineDiagnostic>(
+    () => ({
+      label: "Reaction",
+      loadState: reactionLoadState,
+      relayCount: accountRelayUrls.length,
+      readyReadRelayCount: args.readyReadRelayCount,
+      itemCount: reactionTimeline.length,
+      summary:
+        reactionFetchMeta.lastFetchedAt === null
+          ? null
+          : `targets ${reactionFetchMeta.targetCount}`,
+      lastFetchedAt: reactionFetchMeta.lastFetchedAt,
+      error: reactionError,
+    }),
+    [
+      accountRelayUrls.length,
+      args.readyReadRelayCount,
+      reactionError,
+      reactionFetchMeta.lastFetchedAt,
+      reactionFetchMeta.targetCount,
+      reactionLoadState,
+      reactionTimeline.length,
+    ],
+  );
+
   return {
     clearReactionError,
     primeReactionLoad,
+    reactionDiagnostic,
     reactionError,
     reactionLoadState,
     reactionTimeline,

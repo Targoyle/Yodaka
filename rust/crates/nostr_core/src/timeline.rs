@@ -78,7 +78,9 @@ pub struct TimelineItem {
     pub kind: u32,
     pub content: String,
     pub is_reply: bool,
+    pub reply_target_event_id: Option<String>,
     pub reply_target_pubkey: Option<String>,
+    pub reply_target_relay_hints: Vec<String>,
     pub reply_context_pubkeys: Vec<String>,
     pub like_count: u32,
     pub kusa_count: u32,
@@ -139,8 +141,10 @@ impl Timeline {
 
             if let Some(event) = self.events.get(event_id) {
                 let reply_context_pubkeys = self.reply_context_pubkeys_for_event(event);
+                let reply_target_event_id = self.reply_target_event_id_for_event(event);
                 let reply_target_pubkey =
                     self.reply_target_pubkey_for_event(event, &reply_context_pubkeys);
+                let reply_target_relay_hints = self.reply_target_relay_hints_for_event(event);
                 items.push(TimelineItem {
                     id: event.id.clone(),
                     pubkey: event.pubkey.clone(),
@@ -148,7 +152,9 @@ impl Timeline {
                     kind: event.kind,
                     content: event.content.clone(),
                     is_reply: has_reply_context(event),
+                    reply_target_event_id,
                     reply_target_pubkey,
+                    reply_target_relay_hints,
                     reply_context_pubkeys,
                     like_count: self.like_count_for_event(&event.id),
                     kusa_count: self.kusa_count_for_event(&event.id),
@@ -444,7 +450,7 @@ impl Timeline {
             );
         }
 
-        exclude_self_reply_context_pubkeys(candidates, &event.pubkey)
+        sort_reply_context_pubkeys(candidates, &event.pubkey)
     }
 
     fn reply_target_pubkey_for_event(
@@ -452,24 +458,78 @@ impl Timeline {
         event: &StoredEvent,
         reply_context_pubkeys: &[String],
     ) -> Option<String> {
-        let Some(reply_tag) = find_reply_event_tag(event) else {
-            return match reply_context_pubkeys {
-                [single] => Some(single.clone()),
-                _ => None,
-            };
-        };
+        let preferred_reply_p_target_pubkey = find_preferred_reply_p_target_pubkey(event);
 
-        if let Some(reply_target_pubkey) =
-            normalize_tagged_pubkey(reply_tag.get(4).map(String::as_str))
-        {
-            return Some(reply_target_pubkey);
+        if let Some(reply_tag) = find_reply_event_tag(event) {
+            if let Some(reply_target_pubkey) =
+                normalize_tagged_pubkey(reply_tag.get(4).map(String::as_str))
+            {
+                if reply_target_pubkey != event.pubkey {
+                    return Some(reply_target_pubkey);
+                }
+            }
+
+            if let Some(referenced_event) = reply_tag
+                .get(1)
+                .and_then(|event_id| self.events.get(event_id))
+            {
+                if referenced_event.pubkey != event.pubkey {
+                    return Some(referenced_event.pubkey.clone());
+                }
+            }
+
+            if let Some(reply_target_pubkey) = preferred_reply_p_target_pubkey.clone() {
+                return Some(reply_target_pubkey);
+            }
+
+            if let Some(reply_target_pubkey) =
+                normalize_tagged_pubkey(reply_tag.get(4).map(String::as_str))
+            {
+                return Some(reply_target_pubkey);
+            }
+
+            if let Some(referenced_event) = reply_tag
+                .get(1)
+                .and_then(|event_id| self.events.get(event_id))
+            {
+                return Some(referenced_event.pubkey.clone());
+            }
         }
 
-        if let Some(referenced_event) = reply_tag
-            .get(1)
-            .and_then(|event_id| self.events.get(event_id))
-        {
-            return Some(referenced_event.pubkey.clone());
+        if let Some(root_tag) = find_root_event_tag(event) {
+            if let Some(reply_target_pubkey) =
+                normalize_tagged_pubkey(root_tag.get(4).map(String::as_str))
+            {
+                if reply_target_pubkey != event.pubkey {
+                    return Some(reply_target_pubkey);
+                }
+            }
+
+            if let Some(referenced_event) = root_tag
+                .get(1)
+                .and_then(|event_id| self.events.get(event_id))
+            {
+                if referenced_event.pubkey != event.pubkey {
+                    return Some(referenced_event.pubkey.clone());
+                }
+            }
+
+            if let Some(reply_target_pubkey) = preferred_reply_p_target_pubkey.clone() {
+                return Some(reply_target_pubkey);
+            }
+
+            if let Some(reply_target_pubkey) =
+                normalize_tagged_pubkey(root_tag.get(4).map(String::as_str))
+            {
+                return Some(reply_target_pubkey);
+            }
+
+            if let Some(referenced_event) = root_tag
+                .get(1)
+                .and_then(|event_id| self.events.get(event_id))
+            {
+                return Some(referenced_event.pubkey.clone());
+            }
         }
 
         if let Some(reply_target_pubkey) = event
@@ -484,14 +544,52 @@ impl Timeline {
             return Some(reply_target_pubkey);
         }
 
-        if let Some(reply_target_pubkey) = find_preferred_reply_p_target_pubkey(event) {
+        if let Some(reply_target_pubkey) = preferred_reply_p_target_pubkey {
             return Some(reply_target_pubkey);
         }
 
-        match reply_context_pubkeys {
-            [single] => Some(single.clone()),
-            _ => None,
+        prefer_non_self_reply_context_pubkey(reply_context_pubkeys, &event.pubkey)
+    }
+
+    fn reply_target_event_id_for_event(&self, event: &StoredEvent) -> Option<String> {
+        if let Some(reply_tag) = find_reply_event_tag(event) {
+            if let Some(event_id) = reply_tag.get(1) {
+                return Some(event_id.clone());
+            }
         }
+
+        if let Some(root_tag) = find_root_event_tag(event) {
+            if let Some(event_id) = root_tag.get(1) {
+                return Some(event_id.clone());
+            }
+        }
+
+        event.tags
+            .iter()
+            .find(|tag| tag.first().is_some_and(|value| value == "e") && tag.get(1).is_some())
+            .and_then(|tag| tag.get(1).cloned())
+    }
+
+    fn reply_target_relay_hints_for_event(&self, event: &StoredEvent) -> Vec<String> {
+        let mut relay_hints = Vec::new();
+
+        if let Some(reply_tag) = find_reply_event_tag(event) {
+            push_reply_relay_hint(&mut relay_hints, reply_tag.get(2).map(String::as_str));
+        }
+
+        if let Some(root_tag) = find_root_event_tag(event) {
+            push_reply_relay_hint(&mut relay_hints, root_tag.get(2).map(String::as_str));
+        }
+
+        for tag in &event.tags {
+            if !tag.first().is_some_and(|value| value == "e") {
+                continue;
+            }
+
+            push_reply_relay_hint(&mut relay_hints, tag.get(2).map(String::as_str));
+        }
+
+        relay_hints
     }
 
     fn remove_reaction_event(&mut self, event_id: &str) {
@@ -936,18 +1034,52 @@ fn push_reply_context_pubkey(target: &mut Vec<String>, pubkey: Option<String>) {
     }
 }
 
+fn push_reply_relay_hint(target: &mut Vec<String>, relay_hint: Option<&str>) {
+    let Some(relay_hint) = relay_hint else {
+        return;
+    };
+
+    let trimmed = relay_hint.trim();
+
+    if trimmed.is_empty() {
+        return;
+    }
+
+    let relay_hint = trimmed.to_owned();
+
+    if !target.contains(&relay_hint) {
+        target.push(relay_hint);
+    }
+}
+
 fn exclude_self_reply_context_pubkeys(pubkeys: Vec<String>, self_pubkey: &str) -> Vec<String> {
     let non_self_pubkeys: Vec<String> = pubkeys
         .iter()
         .filter(|pubkey| pubkey.as_str() != self_pubkey)
         .cloned()
         .collect();
+    let self_pubkeys: Vec<String> = pubkeys
+        .iter()
+        .filter(|pubkey| pubkey.as_str() == self_pubkey)
+        .cloned()
+        .collect();
 
-    if non_self_pubkeys.is_empty() {
-        pubkeys
-    } else {
-        non_self_pubkeys
-    }
+    [non_self_pubkeys, self_pubkeys].concat()
+}
+
+fn sort_reply_context_pubkeys(pubkeys: Vec<String>, self_pubkey: &str) -> Vec<String> {
+    exclude_self_reply_context_pubkeys(pubkeys, self_pubkey)
+}
+
+fn prefer_non_self_reply_context_pubkey(
+    pubkeys: &[String],
+    self_pubkey: &str,
+) -> Option<String> {
+    pubkeys
+        .iter()
+        .find(|pubkey| pubkey.as_str() != self_pubkey)
+        .cloned()
+        .or_else(|| pubkeys.first().cloned())
 }
 
 fn find_preferred_reply_p_target_pubkey(event: &StoredEvent) -> Option<String> {
@@ -966,10 +1098,7 @@ fn find_preferred_reply_p_target_pubkey(event: &StoredEvent) -> Option<String> {
 }
 
 fn find_root_id(event: &StoredEvent) -> Option<String> {
-    if let Some(root_tag) = event.tags.iter().find(|tag| {
-        tag.first().is_some_and(|value| value == "e")
-            && tag.get(3).is_some_and(|marker| marker == "root")
-    }) {
+    if let Some(root_tag) = find_root_event_tag(event) {
         return root_tag.get(1).cloned();
     }
 
@@ -980,6 +1109,13 @@ fn find_root_id(event: &StoredEvent) -> Option<String> {
         .collect();
 
     e_tags.first().and_then(|tag| tag.get(1).cloned())
+}
+
+fn find_root_event_tag(event: &StoredEvent) -> Option<&Vec<String>> {
+    event.tags.iter().find(|tag| {
+        tag.first().is_some_and(|value| value == "e")
+            && tag.get(3).is_some_and(|marker| marker == "root")
+    })
 }
 
 fn find_reaction_target_id(event: &StoredEvent) -> Option<String> {
@@ -1272,11 +1408,50 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].id, reply.id.to_hex());
         assert!(items[0].is_reply);
+        assert_eq!(items[0].reply_target_event_id.as_deref(), Some(root.id.to_hex().as_str()));
         assert_eq!(
             items[0].reply_target_pubkey.as_deref(),
             Some(root_author.as_str())
         );
         assert_eq!(items[0].reply_context_pubkeys, vec![root_author]);
+    }
+
+    #[test]
+    fn reply_target_prefers_non_self_context_but_keeps_self_band() {
+        let mut timeline = Timeline::new();
+        let self_keys =
+            test_keys("9090909090909090909090909090909090909090909090909090909090909090");
+        let other_keys =
+            test_keys("8181818181818181818181818181818181818181818181818181818181818181");
+
+        let root = EventBuilder::text_note("root")
+            .custom_created_at(Timestamp::from_secs(100))
+            .sign_with_keys(&self_keys)
+            .expect("root should sign");
+        let self_author = root.pubkey.to_hex();
+        let other_author = other_keys.public_key().to_hex();
+        let reply = EventBuilder::text_note("reply")
+            .tag(
+                Tag::parse(["e", &root.id.to_hex(), "", "root", &self_author])
+                    .expect("root tag should parse"),
+            )
+            .tag(Tag::parse(["p", &self_author]).expect("self p tag should parse"))
+            .tag(Tag::parse(["p", &other_author]).expect("other p tag should parse"))
+            .custom_created_at(Timestamp::from_secs(110))
+            .sign_with_keys(&self_keys)
+            .expect("reply should sign");
+
+        assert!(timeline
+            .verify_and_insert(&root.as_json())
+            .expect("root should verify"));
+        assert!(timeline
+            .verify_and_insert(&reply.as_json())
+            .expect("reply should verify"));
+
+        let items = timeline.list_timeline(10, None);
+        assert_eq!(items[0].reply_target_event_id.as_deref(), Some(root.id.to_hex().as_str()));
+        assert_eq!(items[0].reply_target_pubkey.as_deref(), Some(other_author.as_str()));
+        assert_eq!(items[0].reply_context_pubkeys, vec![other_author, self_author]);
     }
 
     #[test]

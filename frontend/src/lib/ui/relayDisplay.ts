@@ -5,6 +5,11 @@ import type {
 } from "../nostr/relayCoordinator";
 import type { RelaySetting } from "../nostr/storage";
 import {
+  formatRelayAccessLabel,
+  formatRelayAccessMessage,
+  parseRelayAuthMessage,
+} from "../nostr/relayAuth";
+import {
   formatCreatedAt,
   formatRecordedAt,
   formatRetryDelay,
@@ -292,9 +297,12 @@ export function buildRelayDiagnosticEntries(args: {
   }
 
   if (relayDiagnostic.lastPublishError) {
+    const formattedPublishError =
+      formatRelayAccessMessage(relayDiagnostic.lastPublishError)
+      ?? relayDiagnostic.lastPublishError;
     entries.push({
-      label: "直近 publish 失敗",
-      value: relayDiagnostic.lastPublishError,
+      label: formatRelayAccessLabel(relayDiagnostic.lastPublishError, "直近 publish 失敗"),
+      value: formattedPublishError,
       tone: "error" as const,
     });
   }
@@ -307,11 +315,22 @@ export function buildRelayDiagnosticEntries(args: {
     });
   }
 
-  if (relayDiagnostic.lastClosedMessage) {
+  if (relayDiagnostic.lastAuthChallenge) {
     entries.push({
-      label: "直近 CLOSED",
-      value: relayDiagnostic.lastClosedMessage,
+      label: "直近 AUTH",
+      value: relayDiagnostic.lastAuthChallenge,
       tone: "muted" as const,
+    });
+  }
+
+  if (relayDiagnostic.lastClosedMessage) {
+    const parsedClosed = parseRelayAuthMessage(relayDiagnostic.lastClosedMessage);
+    entries.push({
+      label: formatRelayAccessLabel(relayDiagnostic.lastClosedMessage, "直近 CLOSED"),
+      value:
+        formatRelayAccessMessage(relayDiagnostic.lastClosedMessage)
+        ?? relayDiagnostic.lastClosedMessage,
+      tone: parsedClosed.requirement ? ("error" as const) : ("muted" as const),
     });
   }
 
@@ -401,6 +420,7 @@ export function buildEmptyRelayDiagnostic(): RelayDiagnosticState {
     sinceHint: null,
     lastConnected: 0,
     lastStatusAt: null,
+    lastAuthChallenge: null,
     lastNotice: null,
     lastClosedMessage: null,
     lastError: null,

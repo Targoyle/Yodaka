@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type MutableRefObject,
@@ -17,7 +18,11 @@ import {
 } from "../lib/nostr/timelinePresentation";
 import type { TimelineItem, TimelineProfile } from "../lib/wasm/client";
 import { fetchRecentNotesByAuthors } from "../lib/nostr/contacts";
-import type { AuxiliaryLoadState, TimelineView } from "../app/types";
+import type {
+  AuxiliaryLoadState,
+  AuxiliaryTimelineDiagnostic,
+  TimelineView,
+} from "../app/types";
 import { useTemporaryRelayTransport } from "./useTemporaryRelayTransport";
 
 type UseAccountTimelineArgs = {
@@ -27,6 +32,7 @@ type UseAccountTimelineArgs = {
   isResolvingSignerPubkey: boolean;
   manualPubkey: string | null;
   markSignerUnavailable: () => void;
+  prefetchAccountTimeline: boolean;
   profileSummariesRef: MutableRefObject<Map<string, TimelineProfile>>;
   readRelayUrls: string[];
   relayBootstrapDeferred: boolean;
@@ -46,12 +52,29 @@ export function useAccountTimeline(args: UseAccountTimelineArgs) {
   const [accountSourceKey, setAccountSourceKey] = useState<string | null>(null);
   const [accountError, setAccountError] = useState<string | null>(null);
   const [accountTimeline, setAccountTimeline] = useState<TimelineItem[]>([]);
+  const [accountFetchMeta, setAccountFetchMeta] = useState<{
+    noteCount: number;
+    lastFetchedAt: number | null;
+  }>({
+    noteCount: 0,
+    lastFetchedAt: null,
+  });
+  const shouldPrefetchAccount =
+    args.prefetchAccountTimeline
+    && Boolean(args.viewerPubkey);
   const oneShotTransport = useTemporaryRelayTransport({
-    active: args.timelineView === "follow" || args.timelineView === "account",
+    active:
+      args.timelineView === "follow"
+      || args.timelineView === "account"
+      || shouldPrefetchAccount,
     relayBootstrapDeferred: args.relayBootstrapDeferred,
     relayCoordinatorRef: args.relayCoordinatorRef,
     readyReadRelayCount: args.readyReadRelayCount,
   });
+  const accountRelayUrls = useMemo(
+    () => loadAccountRelayUrls(args.readRelayUrls),
+    [args.relayConfigurationKey],
+  );
 
   const ensureViewerPubkeyRef = useRef(args.ensureViewerPubkey);
   const ingestOverlayEventsRef = useRef(args.ingestOverlayEvents);
@@ -74,7 +97,11 @@ export function useAccountTimeline(args: UseAccountTimelineArgs) {
       return;
     }
 
-    if (args.timelineView !== "follow" && args.timelineView !== "account") {
+    if (
+      args.timelineView !== "follow"
+      && args.timelineView !== "account"
+      && !shouldPrefetchAccount
+    ) {
       return;
     }
 
@@ -169,6 +196,10 @@ export function useAccountTimeline(args: UseAccountTimelineArgs) {
           });
         }
 
+        setAccountFetchMeta({
+          noteCount: events.length,
+          lastFetchedAt: Date.now(),
+        });
         setAccountLoadState("ready");
       } catch (error) {
         if (cancelled) {
@@ -195,6 +226,7 @@ export function useAccountTimeline(args: UseAccountTimelineArgs) {
     args.isResolvingSignerPubkey,
     args.manualPubkey,
     args.profileSummariesRef,
+    args.prefetchAccountTimeline,
     args.relayBootstrapDeferred,
     args.relayConfigurationKey,
     args.relayCoordinatorRef,
@@ -206,6 +238,7 @@ export function useAccountTimeline(args: UseAccountTimelineArgs) {
     args.viewerPubkey,
     oneShotTransport.ready,
     oneShotTransport.relayTransport,
+    shouldPrefetchAccount,
   ]);
 
   useEffect(() => {
@@ -241,13 +274,43 @@ export function useAccountTimeline(args: UseAccountTimelineArgs) {
     setAccountSourceKey(null);
     setAccountError(null);
     setAccountTimeline([]);
+    setAccountFetchMeta({
+      noteCount: 0,
+      lastFetchedAt: null,
+    });
   }, []);
 
   function primeAccountLoad() {
     setAccountLoadState((current) => (current === "idle" ? "loading" : current));
   }
 
+  const accountDiagnostic = useMemo<AuxiliaryTimelineDiagnostic>(
+    () => ({
+      label: "Account",
+      loadState: accountLoadState,
+      relayCount: accountRelayUrls.length,
+      readyReadRelayCount: args.readyReadRelayCount,
+      itemCount: accountTimeline.length,
+      summary:
+        accountFetchMeta.lastFetchedAt === null
+          ? null
+          : `notes ${accountFetchMeta.noteCount}`,
+      lastFetchedAt: accountFetchMeta.lastFetchedAt,
+      error: accountError,
+    }),
+    [
+      accountError,
+      accountFetchMeta.lastFetchedAt,
+      accountFetchMeta.noteCount,
+      accountLoadState,
+      accountRelayUrls.length,
+      accountTimeline.length,
+      args.readyReadRelayCount,
+    ],
+  );
+
   return {
+    accountDiagnostic,
     accountError,
     accountLoadState,
     accountTimeline,

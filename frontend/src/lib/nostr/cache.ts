@@ -1,5 +1,6 @@
 import type { TimelineProfile } from "../wasm/client";
 import {
+  parseProfileSummary,
   shouldReplaceProfileSummaryVersion,
   type ProfileSummaryVersion,
 } from "./profilePresentation";
@@ -55,7 +56,7 @@ export type ReplayMultiRelayCacheResult = {
 };
 
 const DB_NAME = "nostr-client-v1";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const SCHEMA_VERSION = 1;
 const STORE_EVENTS = "events";
 const STORE_PROFILES = "profiles";
@@ -63,6 +64,7 @@ const STORE_RELAYS = "relays";
 const STORE_SETTINGS = "settings";
 const INDEX_EVENTS_BY_RELAY_KIND_CREATED_AT = "byRelayKindCreatedAt";
 const INDEX_PROFILES_BY_CREATED_AT = "byCreatedAt";
+const INDEX_PROFILES_BY_FETCHED_AT = "byFetchedAt";
 const SETTING_SCHEMA_VERSION = "schema_version";
 const CACHED_FEED_EVENT_KINDS = [1, 7] as const;
 const MAX_CACHED_FEED_EVENTS_PER_RELAY_KIND = 5_000;
@@ -351,15 +353,33 @@ export async function loadCachedProfilesByPubkeys(pubkeys: string[]) {
     return [] as StoredProfileRecord[];
   }
 
-  return withTransaction(db, [STORE_PROFILES], "readonly", async (transaction) => {
+  return withTransaction(db, [STORE_PROFILES], "readwrite", async (transaction) => {
     const profileStore = transaction.objectStore(STORE_PROFILES);
+    const touchedAt = Date.now();
     const records = await Promise.all(
       normalizedPubkeys.map(async (pubkey) => {
         const record = (await requestToPromise(
           profileStore.get(pubkey),
         )) as StoredProfileRecord | undefined;
 
-        return record ?? null;
+        if (!record) {
+          return null;
+        }
+
+        const summary =
+          record.summary !== undefined
+            ? record.summary
+            : parseProfileSummary(record.rawContent ?? "");
+        const nextRecord: StoredProfileRecord = {
+          pubkey: record.pubkey,
+          eventId: record.eventId,
+          createdAt: record.createdAt,
+          fetchedAt: touchedAt,
+          summary,
+        };
+
+        await requestToPromise(profileStore.put(nextRecord));
+        return nextRecord;
       }),
     );
 
@@ -416,6 +436,13 @@ function openCacheDatabase(): Promise<IDBDatabase> {
           keyPath: "pubkey",
         });
         store.createIndex(INDEX_PROFILES_BY_CREATED_AT, "createdAt");
+        store.createIndex(INDEX_PROFILES_BY_FETCHED_AT, "fetchedAt");
+      } else if (request.transaction) {
+        const store = request.transaction.objectStore(STORE_PROFILES);
+
+        if (!store.indexNames.contains(INDEX_PROFILES_BY_FETCHED_AT)) {
+          store.createIndex(INDEX_PROFILES_BY_FETCHED_AT, "fetchedAt");
+        }
       }
 
       if (!database.objectStoreNames.contains(STORE_RELAYS)) {
@@ -520,11 +547,10 @@ async function upsertProfileRecord(db: IDBDatabase, event: NostrEvent) {
 
       const record: StoredProfileRecord = {
         pubkey: event.pubkey,
-        rawJson: stringifyEvent(event),
-        rawContent: event.content,
         eventId: event.id,
         createdAt: event.created_at,
         fetchedAt: Date.now(),
+        summary: parseProfileSummary(event.content),
       };
 
       await requestToPromise(profileStore.put(record));
@@ -572,7 +598,7 @@ async function pruneReplayEvents(
 }
 
 async function pruneProfiles(profileStore: IDBObjectStore) {
-  const profileIndex = profileStore.index(INDEX_PROFILES_BY_CREATED_AT);
+  const profileIndex = profileStore.index(INDEX_PROFILES_BY_FETCHED_AT);
   const total = await requestToPromise(profileIndex.count());
   let excess = total - MAX_CACHED_PROFILES;
 

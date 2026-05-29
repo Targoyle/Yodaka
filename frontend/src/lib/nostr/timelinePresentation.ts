@@ -96,6 +96,9 @@ export function buildAuxiliaryTimeline(args: {
     const replyContextPubkeys = supportsReplyContext
       ? findReplyContextPubkeys(event, referenceById)
       : [];
+    const replyTargetEventId = supportsReplyContext
+      ? findReplyTargetEventId(event)
+      : null;
     const replyTargetPubkey = supportsReplyContext
       ? findReplyTargetPubkey(
           event,
@@ -103,6 +106,9 @@ export function buildAuxiliaryTimeline(args: {
           replyContextPubkeys,
         )
       : null;
+    const replyTargetRelayHints = supportsReplyContext
+      ? findReplyTargetRelayHints(event)
+      : [];
     const replyTargetProfile = replyTargetPubkey
       ? args.profileSummaries.get(replyTargetPubkey) ?? existing?.replyTargetProfile ?? null
       : null;
@@ -110,13 +116,20 @@ export function buildAuxiliaryTimeline(args: {
     if (existing) {
       items.set(
         event.id,
-        existing.replyTargetPubkey === replyTargetPubkey
+        existing.replyTargetEventId === replyTargetEventId
+        && existing.replyTargetPubkey === replyTargetPubkey
+        && replyTargetRelayHintsEqual(
+          existing.replyTargetRelayHints ?? [],
+          replyTargetRelayHints,
+        )
         && profilesEqual(existing.replyTargetProfile, replyTargetProfile)
         && replyContextPubkeysEqual(existing.replyContextPubkeys, replyContextPubkeys)
           ? existing
           : {
               ...existing,
+              replyTargetEventId,
               replyTargetPubkey,
+              replyTargetRelayHints,
               replyTargetProfile,
               replyContextPubkeys,
             },
@@ -131,7 +144,9 @@ export function buildAuxiliaryTimeline(args: {
       kind: event.kind,
       content: event.content,
       isReply: supportsReplyContext && event.tags.some((tag) => tag[0] === "e" || tag[0] === "a"),
+      replyTargetEventId,
       replyTargetPubkey,
+      replyTargetRelayHints,
       replyTargetProfile,
       replyContextPubkeys,
       likeCount: 0,
@@ -171,8 +186,14 @@ export function mergeAuxiliaryTimeline(args: {
 
     const currentItem = items.get(item.id);
     const latestProfile = args.profileSummaries.get(item.pubkey) ?? item.profile;
+    const replyTargetEventId =
+      item.replyTargetEventId ?? currentItem?.replyTargetEventId ?? null;
     const replyTargetPubkey =
       item.replyTargetPubkey ?? currentItem?.replyTargetPubkey ?? null;
+    const replyTargetRelayHints =
+      item.replyTargetRelayHints && item.replyTargetRelayHints.length > 0
+        ? item.replyTargetRelayHints
+        : currentItem?.replyTargetRelayHints ?? [];
     const latestReplyTargetProfile = replyTargetPubkey
       ? args.profileSummaries.get(replyTargetPubkey)
         ?? item.replyTargetProfile
@@ -205,7 +226,9 @@ export function mergeAuxiliaryTimeline(args: {
     const mergedItem: TimelineItem = {
       ...(preserveResolvedNotifyBody && currentItem ? currentItem : item),
       isReply,
+      replyTargetEventId,
       replyTargetPubkey,
+      replyTargetRelayHints,
       replyTargetProfile: latestReplyTargetProfile,
       replyContextPubkeys,
       profile: latestProfile,
@@ -225,7 +248,12 @@ export function mergeAuxiliaryTimeline(args: {
       && currentItem.kind === mergedItem.kind
       && currentItem.content === mergedItem.content
       && currentItem.isReply === mergedItem.isReply
+      && (currentItem.replyTargetEventId ?? null) === (mergedItem.replyTargetEventId ?? null)
       && currentItem.replyTargetPubkey === mergedItem.replyTargetPubkey
+      && replyTargetRelayHintsEqual(
+        currentItem.replyTargetRelayHints ?? [],
+        mergedItem.replyTargetRelayHints ?? [],
+      )
       && profilesEqual(currentItem.replyTargetProfile, mergedItem.replyTargetProfile)
       && replyContextPubkeysEqual(currentItem.replyContextPubkeys, mergedItem.replyContextPubkeys)
       && currentItem.likeCount === mergedItem.likeCount
@@ -303,7 +331,12 @@ export function timelineItemsEqual(left: TimelineItem[], right: TimelineItem[]) 
       || leftItem.kind !== rightItem.kind
       || leftItem.content !== rightItem.content
       || leftItem.isReply !== rightItem.isReply
+      || (leftItem.replyTargetEventId ?? null) !== (rightItem.replyTargetEventId ?? null)
       || leftItem.replyTargetPubkey !== rightItem.replyTargetPubkey
+      || !replyTargetRelayHintsEqual(
+        leftItem.replyTargetRelayHints ?? [],
+        rightItem.replyTargetRelayHints ?? [],
+      )
       || !profilesEqual(leftItem.replyTargetProfile, rightItem.replyTargetProfile)
       || !replyContextPubkeysEqual(
         leftItem.replyContextPubkeys,
@@ -330,6 +363,50 @@ export function timelineItemsEqual(left: TimelineItem[], right: TimelineItem[]) 
   return true;
 }
 
+function findReplyTargetRelayHints(event: NostrEvent) {
+  const relayHints: string[] = [];
+
+  const pushRelayHint = (relayHint: string | undefined) => {
+    const normalized = relayHint?.trim();
+
+    if (!normalized || relayHints.includes(normalized)) {
+      return;
+    }
+
+    relayHints.push(normalized);
+  };
+
+  for (const tag of event.tags) {
+    if (tag[0] !== "e") {
+      continue;
+    }
+
+    if (tag[3] === "reply") {
+      pushRelayHint(tag[2]);
+    }
+  }
+
+  for (const tag of event.tags) {
+    if (tag[0] !== "e") {
+      continue;
+    }
+
+    if (tag[3] === "root") {
+      pushRelayHint(tag[2]);
+    }
+  }
+
+  for (const tag of event.tags) {
+    if (tag[0] !== "e") {
+      continue;
+    }
+
+    pushRelayHint(tag[2]);
+  }
+
+  return relayHints;
+}
+
 export function compareTimelineItemsDesc(left: TimelineItem, right: TimelineItem) {
   if (left.createdAt === right.createdAt) {
     return right.id.localeCompare(left.id);
@@ -343,23 +420,81 @@ function findReplyTargetPubkey(
   referenceById: Map<string, TimelineItem>,
   replyContextPubkeys: string[],
 ) {
+  const selfPubkey = normalizeHexPubkey(event.pubkey);
+  const preferredReplyPTargetPubkey = findPreferredReplyPTargetPubkey(event);
   const replyTag = findReplyEventTag(event);
 
-  if (!replyTag) {
-    return replyContextPubkeys.length === 1 ? replyContextPubkeys[0] : null;
+  if (replyTag) {
+    const replyTargetPubkey = normalizeTaggedPubkey(replyTag[4]);
+
+    if (
+      replyTargetPubkey
+      && replyTargetPubkey !== selfPubkey
+    ) {
+      return replyTargetPubkey;
+    }
+
+    if (replyTag[1]) {
+      const referencedItem = referenceById.get(replyTag[1]);
+
+      if (referencedItem?.pubkey && referencedItem.pubkey !== selfPubkey) {
+        return referencedItem.pubkey;
+      }
+    }
+
+    if (preferredReplyPTargetPubkey) {
+      return preferredReplyPTargetPubkey;
+    }
+
+    if (replyTargetPubkey) {
+      return replyTargetPubkey;
+    }
+
+    if (replyTag[1]) {
+      const referencedItem = referenceById.get(replyTag[1]);
+
+      if (referencedItem) {
+        return referencedItem.pubkey;
+      }
+    }
   }
 
-  const replyTargetPubkey = normalizeTaggedPubkey(replyTag[4]);
+  const rootTag = event.tags.find((tag) =>
+    tag[0] === "e" && tag[3] === "root",
+  );
 
-  if (replyTargetPubkey) {
-    return replyTargetPubkey;
-  }
+  if (rootTag) {
+    const rootTargetPubkey = normalizeTaggedPubkey(rootTag[4]);
 
-  if (replyTag[1]) {
-    const referencedItem = referenceById.get(replyTag[1]);
+    if (
+      rootTargetPubkey
+      && rootTargetPubkey !== selfPubkey
+    ) {
+      return rootTargetPubkey;
+    }
 
-    if (referencedItem) {
-      return referencedItem.pubkey;
+    if (rootTag[1]) {
+      const referencedItem = referenceById.get(rootTag[1]);
+
+      if (referencedItem?.pubkey && referencedItem.pubkey !== selfPubkey) {
+        return referencedItem.pubkey;
+      }
+    }
+
+    if (preferredReplyPTargetPubkey) {
+      return preferredReplyPTargetPubkey;
+    }
+
+    if (rootTargetPubkey) {
+      return rootTargetPubkey;
+    }
+
+    if (rootTag[1]) {
+      const referencedItem = referenceById.get(rootTag[1]);
+
+      if (referencedItem) {
+        return referencedItem.pubkey;
+      }
     }
   }
 
@@ -371,8 +506,29 @@ function findReplyTargetPubkey(
     return normalizeHexPubkey(replyPTag[1]);
   }
 
-  return findPreferredReplyPTargetPubkey(event)
+  return preferredReplyPTargetPubkey
+    ?? preferNonSelfReplyContextPubkey(replyContextPubkeys, selfPubkey)
     ?? (replyContextPubkeys.length === 1 ? replyContextPubkeys[0] : null);
+}
+
+function findReplyTargetEventId(event: NostrEvent) {
+  const replyTag = findReplyEventTag(event);
+
+  if (replyTag?.[1]) {
+    return replyTag[1];
+  }
+
+  const rootTag = event.tags.find((tag) =>
+    tag[0] === "e" && tag[3] === "root",
+  );
+
+  if (rootTag?.[1]) {
+    return rootTag[1];
+  }
+
+  const firstEventTag = event.tags.find((tag) => tag[0] === "e" && tag[1]);
+
+  return firstEventTag?.[1] ?? null;
 }
 
 function findReplyContextPubkeys(
@@ -401,7 +557,7 @@ function findReplyContextPubkeys(
     pushReplyContextPubkey(candidates, normalizeTaggedPubkey(tag[1]));
   }
 
-  return excludeSelfReplyContextPubkeys(candidates, normalizeHexPubkey(event.pubkey));
+  return sortReplyContextPubkeys(candidates, normalizeHexPubkey(event.pubkey));
 }
 
 function findReplyEventTag(event: NostrEvent) {
@@ -428,8 +584,20 @@ function pushReplyContextPubkey(target: string[], pubkey: string | null) {
 
 function excludeSelfReplyContextPubkeys(pubkeys: string[], selfPubkey: string) {
   const nonSelfPubkeys = pubkeys.filter((pubkey) => pubkey !== selfPubkey);
+  const selfPubkeys = pubkeys.filter((pubkey) => pubkey === selfPubkey);
 
-  return nonSelfPubkeys.length > 0 ? nonSelfPubkeys : pubkeys;
+  return [...nonSelfPubkeys, ...selfPubkeys];
+}
+
+function sortReplyContextPubkeys(pubkeys: string[], selfPubkey: string) {
+  return excludeSelfReplyContextPubkeys(pubkeys, selfPubkey);
+}
+
+function preferNonSelfReplyContextPubkey(
+  pubkeys: string[],
+  selfPubkey: string,
+) {
+  return pubkeys.find((pubkey) => pubkey !== selfPubkey) ?? pubkeys[0] ?? null;
 }
 
 function findPreferredReplyPTargetPubkey(event: NostrEvent) {
@@ -444,6 +612,24 @@ function findPreferredReplyPTargetPubkey(event: NostrEvent) {
 }
 
 function replyContextPubkeysEqual(left: string[], right: string[]) {
+  if (left === right) {
+    return true;
+  }
+
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function replyTargetRelayHintsEqual(left: string[], right: string[]) {
   if (left === right) {
     return true;
   }

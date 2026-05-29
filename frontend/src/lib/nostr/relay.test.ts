@@ -125,10 +125,14 @@ describe("parseRelayMessage", () => {
     });
   });
 
-  it("EOSE / NOTICE / CLOSED を解釈できる", () => {
+  it("EOSE / AUTH / NOTICE / CLOSED を解釈できる", () => {
     expect(parseRelayMessage('["EOSE","feed-sub"]')).toEqual({
       type: "EOSE",
       subscriptionId: "feed-sub",
+    });
+    expect(parseRelayMessage('["AUTH","challenge-token"]')).toEqual({
+      type: "AUTH",
+      challenge: "challenge-token",
     });
     expect(parseRelayMessage('["NOTICE","slow down"]')).toEqual({
       type: "NOTICE",

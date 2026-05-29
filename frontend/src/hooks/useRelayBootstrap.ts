@@ -566,7 +566,7 @@ export function useRelayBootstrap(args: UseRelayBootstrapArgs) {
 
     function recordRelayDebugEvent(args: {
       relayUrl: string;
-      type: "notice" | "closed" | "error";
+      type: "auth" | "notice" | "closed" | "error";
       message: string | null;
     }) {
       if (cancelled || !args.message) {
@@ -574,6 +574,12 @@ export function useRelayBootstrap(args: UseRelayBootstrapArgs) {
       }
 
       switch (args.type) {
+        case "auth":
+          patchRelayDiagnostic(args.relayUrl, {
+            lastAuthChallenge: args.message,
+          });
+          return;
+
         case "notice":
           patchRelayDiagnostic(args.relayUrl, {
             lastNotice: args.message,
@@ -876,8 +882,23 @@ export function useRelayBootstrap(args: UseRelayBootstrapArgs) {
 
             void enqueuePersistence(() => persistRelayStateFor(status.relayUrl));
           },
+          onAuthChallenge: ({ relayUrl }) => {
+            recordRelayDebugEvent({
+              relayUrl,
+              type: "auth",
+              message: "NIP-42 AUTH challenge を受信 (未対応)",
+            });
+          },
           onDebug: (event) => {
             switch (event.type) {
+              case "recv_auth":
+                recordRelayDebugEvent({
+                  relayUrl: event.relayUrl,
+                  type: "auth",
+                  message: "NIP-42 AUTH challenge を受信 (未対応)",
+                });
+                return;
+
               case "recv_notice":
                 recordRelayDebugEvent({
                   relayUrl: event.relayUrl,

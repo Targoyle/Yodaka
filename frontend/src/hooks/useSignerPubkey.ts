@@ -271,6 +271,23 @@ export function useSignerPubkey() {
     setSignerRequestMessage(null);
   }
 
+  async function adoptNip07SignerPubkey(pubkey: string) {
+    const normalizedPubkey = parseViewerPubkeyInput(pubkey);
+
+    if (!normalizedPubkey) {
+      throw new Error("NIP-07 signer の公開鍵が不正です");
+    }
+
+    await clearLocalSignerSession();
+    setSignerAvailable(true);
+    setSignerPubkey(normalizedPubkey);
+    setActiveSignerKind("nip07");
+    setAutoSignerPromptBlocked(false);
+    clearSignerRequestFeedback();
+
+    return normalizedPubkey;
+  }
+
   async function clearActiveSigner() {
     await clearLocalSignerSession();
 
@@ -284,6 +301,7 @@ export function useSignerPubkey() {
     activeSignerKind,
     autoSignerPromptBlocked,
     clearActiveSigner,
+    adoptNip07SignerPubkey,
     clearSignerRequestFeedback,
     createActiveSigner,
     ensureSignerPubkey,

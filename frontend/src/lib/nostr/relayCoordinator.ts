@@ -8,6 +8,7 @@ import {
   type RelayFilter,
   type RelayStatus,
 } from "./relay";
+import { formatRelayAccessMessage } from "./relayAuth";
 
 export type RelayCoordinatorPhase =
   | "idle"
@@ -77,6 +78,7 @@ export type RelayCoordinatorOptions = {
   onEose?: (
     context: RelayCoordinatorEoseContext,
   ) => void | Promise<void>;
+  onAuthChallenge?: (args: { relayUrl: string; challenge: string }) => void;
   onClosed?: (context: RelayCoordinatorClosedContext) => void;
   onStatus?: (status: RelayCoordinatorStatus) => void;
   onRelayStatus?: (status: RelayStatus) => void;
@@ -134,6 +136,11 @@ export class RelayCoordinator {
           this.options.onEose?.({
             ...context,
             relayUrl,
+          }),
+        onAuthChallenge: (challenge) =>
+          this.options.onAuthChallenge?.({
+            relayUrl,
+            challenge,
           }),
         onClosed: (context) =>
           this.options.onClosed?.({
@@ -425,10 +432,10 @@ function buildRelayPublishErrorMessage(
   const first = errors[0];
 
   if (errors.length === 1) {
-    return `${first.relayUrl}: ${first.message}`;
+    return `${first.relayUrl}: ${formatRelayAccessMessage(first.message) ?? first.message}`;
   }
 
-  return `${errors.length} relay への publish が失敗しました: ${first.relayUrl}: ${first.message}`;
+  return `${errors.length} relay への publish が失敗しました: ${first.relayUrl}: ${formatRelayAccessMessage(first.message) ?? first.message}`;
 }
 
 function uniqueRelayUrls(relayUrls: string[]) {

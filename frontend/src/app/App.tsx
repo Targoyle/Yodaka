@@ -11,6 +11,8 @@ import {
   saveRelaySettingsSnapshot,
 } from "../lib/nostr/cache";
 import { normalizeRelayUrls } from "../lib/nostr/contacts";
+import { encodeNevent } from "../lib/nostr/nip19";
+import type { NostrEvent } from "../lib/nostr/relay";
 import {
   buildTimelineEmptyMessage,
   buildVisibleTimeline,
@@ -46,6 +48,7 @@ import {
 import { pickComposerWelcomeMessage } from "../lib/ui/composerMessages";
 import { KeyMinerPanel } from "../components/KeyMinerPanel";
 import { ComposerPanel } from "../components/ComposerPanel";
+import { EventJsonDialog } from "../components/EventJsonDialog";
 import { ManualPubkeyDialog } from "../components/ManualPubkeyDialog";
 import { SignerDialog } from "../components/SignerDialog";
 import { TimelinePanel } from "../components/TimelinePanel";
@@ -60,6 +63,13 @@ import { usePublish } from "../hooks/usePublish";
 import { useRelayBootstrap } from "../hooks/useRelayBootstrap";
 import { useKeyMinerPanel } from "../hooks/useKeyMinerPanel";
 import { loginWithNsec } from "../lib/wasm/client";
+import { createTemporaryRelayTransport } from "../lib/nostr/temporaryRelayTransport";
+import {
+  fetchLatestEventByIdAcrossRelays,
+  fetchLatestEventByIdViaAuthorRelays,
+  formatDebugEventJson,
+} from "../lib/nostr/eventDebug";
+import type { TimelineItem } from "../lib/wasm/client";
 
 const TIMELINE_LIMIT = 50;
 
@@ -97,6 +107,7 @@ export function App() {
   const initialManualPubkey = useRef(loadManualPubkey()).current;
   const {
     activeSignerKind,
+    adoptNip07SignerPubkey,
     autoSignerPromptBlocked,
     clearActiveSigner,
     clearSignerRequestFeedback,
@@ -119,6 +130,17 @@ export function App() {
   const [signerDialogOpen, setSignerDialogOpen] = useState(false);
   const [pendingFollowAfterNsecLogin, setPendingFollowAfterNsecLogin] = useState(false);
   const [composerWelcomeMessage, setComposerWelcomeMessage] = useState<string | null>(null);
+  const [eventJsonDialogState, setEventJsonDialogState] = useState<{
+    isOpen: boolean;
+    title: string;
+    jsonText: string;
+  }>({
+    isOpen: false,
+    title: "",
+    jsonText: "",
+  });
+  const [replyPreviewItems, setReplyPreviewItems] = useState<TimelineItem[]>([]);
+  const [replyPreviewRetryRevision, setReplyPreviewRetryRevision] = useState(0);
   const [timelineView, setTimelineView] = useState<TimelineView>(() =>
     initialManualPubkey ? "follow" : "relay",
   );
@@ -188,9 +210,15 @@ export function App() {
   const canOpenPersonalTimeline = canSignEvents || Boolean(viewerPubkey);
   const hasAutoSwitchedToFollowRef = useRef(false);
   const readyReadRelayCount = relayStatus.readyRelayCount;
+  const debugRelayTransport = createTemporaryRelayTransport(
+    () => relayCoordinatorRef.current,
+  );
+  const inflightReplyPreviewIdsRef = useRef<Set<string>>(new Set());
+  const resolvedReplyPreviewIdsRef = useRef<Set<string>>(new Set());
 
   const {
     clearFollowError,
+    followDiagnostic,
     followError,
     followLoadState,
     followTimeline,
@@ -217,6 +245,7 @@ export function App() {
     viewerPubkey,
   });
   const {
+    accountDiagnostic,
     accountError,
     accountLoadState,
     accountTimeline,
@@ -230,6 +259,7 @@ export function App() {
     isResolvingSignerPubkey,
     manualPubkey,
     markSignerUnavailable,
+    prefetchAccountTimeline: accountTabEnabled || notifyTabEnabled,
     profileSummariesRef,
     readRelayUrls,
     relayBootstrapDeferred,
@@ -245,6 +275,7 @@ export function App() {
   });
   const {
     clearNotifyError,
+    notifyDiagnostic,
     notifyError,
     notifyLoadState,
     notifyTimeline,
@@ -258,6 +289,7 @@ export function App() {
     isResolvingSignerPubkey,
     manualPubkey,
     markSignerUnavailable,
+    notifyTabEnabled,
     profileSummariesRef,
     readRelayUrls,
     relayBootstrapDeferred,
@@ -274,6 +306,7 @@ export function App() {
   const {
     clearReactionError,
     primeReactionLoad,
+    reactionDiagnostic,
     reactionError,
     reactionLoadState,
     reactionTimeline,
@@ -288,6 +321,7 @@ export function App() {
     markSignerUnavailable,
     profileSummariesRef,
     readRelayUrls,
+    reactionTabEnabled,
     relayBootstrapDeferred,
     relayConfigurationKey,
     relayCoordinatorRef,
@@ -311,6 +345,7 @@ export function App() {
     publishError,
     publishMessage,
   } = usePublish({
+    adoptNip07SignerPubkey,
     applyRelayPublishDiagnostics,
     countReadyWriteRelays,
     createActiveSigner,
@@ -324,6 +359,7 @@ export function App() {
     scheduleRefreshRef,
     selectReactionRelayHint,
     signerPubkey,
+    viewerPubkey,
     writeRelayUrls,
   });
 
@@ -499,6 +535,46 @@ export function App() {
 
     if (relaySettingsError) {
       setRelaySettingsError(null);
+    }
+  }
+
+  async function handleCopyEventId(eventId: string) {
+    if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
+      return;
+    }
+
+    await navigator.clipboard.writeText(encodeNevent(eventId) ?? eventId);
+  }
+
+  async function handleViewEventJson(item: TimelineItem) {
+    const title = `event ${item.id.slice(0, 12)}`;
+    setEventJsonDialogState({
+      isOpen: true,
+      title,
+      jsonText: "読み込み中...",
+    });
+
+    try {
+      const rawEvent = readyReadRelayCount > 0
+        ? await fetchLatestEventByIdAcrossRelays(
+          readRelayUrls,
+          item.id,
+          debugRelayTransport,
+        )
+        : null;
+
+      setEventJsonDialogState({
+        isOpen: true,
+        title,
+        jsonText: formatDebugEventJson(rawEvent, item),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setEventJsonDialogState({
+        isOpen: true,
+        title,
+        jsonText: `${formatDebugEventJson(null, item)}\n\n/* fetch error: ${message} */`,
+      });
     }
   }
 
@@ -700,6 +776,148 @@ export function App() {
     timelineLimit: TIMELINE_LIMIT,
     timelineView,
   });
+  const timelineReferenceItems = [
+    ...timeline,
+    ...followTimeline,
+    ...accountTimeline,
+    ...notifyTimeline,
+    ...reactionTimeline,
+    ...replyPreviewItems,
+  ];
+
+  useEffect(() => {
+    const referenceById = new Map(timelineReferenceItems.map((item) => [item.id, item] as const));
+    const persistedIds = new Set(replyPreviewItems.map((item) => item.id));
+    const resolvedPreviewItems = visibleTimeline
+      .map((item) => item.replyTargetEventId ? referenceById.get(item.replyTargetEventId) ?? null : null)
+      .filter((item): item is TimelineItem => (
+        item !== null
+        && !persistedIds.has(item.id)
+      ));
+
+    if (resolvedPreviewItems.length === 0) {
+      return;
+    }
+
+    setReplyPreviewItems((current) => {
+      const knownIds = new Set(current.map((item) => item.id));
+      const uniqueItems = resolvedPreviewItems.filter((item) => !knownIds.has(item.id));
+
+      return uniqueItems.length === 0 ? current : [...current, ...uniqueItems];
+    });
+  }, [replyPreviewItems, timelineReferenceItems, visibleTimeline]);
+
+  useEffect(() => {
+    if (readyReadRelayCount <= 0 || readRelayUrls.length === 0) {
+      return;
+    }
+
+    const referenceItemIds = new Set(timelineReferenceItems.map((item) => item.id));
+    const missingReplyTargetIds = [...new Set(
+      visibleTimeline
+        .map((item) => item.replyTargetEventId)
+        .filter((eventId): eventId is string => (
+          typeof eventId === "string"
+          && eventId.length > 0
+          && !referenceItemIds.has(eventId)
+          && !resolvedReplyPreviewIdsRef.current.has(eventId)
+          && !inflightReplyPreviewIdsRef.current.has(eventId)
+        )),
+    )];
+
+    if (missingReplyTargetIds.length === 0) {
+      return;
+    }
+
+    for (const eventId of missingReplyTargetIds) {
+      inflightReplyPreviewIdsRef.current.add(eventId);
+    }
+
+    let cancelled = false;
+    let retryTimerId: number | null = null;
+
+    void (async () => {
+      const settled = await Promise.all(
+        missingReplyTargetIds.map(async (eventId) => {
+          const sourceItem = visibleTimeline.find(
+            (item) => item.replyTargetEventId === eventId,
+          );
+
+          return {
+            eventId,
+            event: await fetchLatestEventByIdViaAuthorRelays({
+              authorPubkey: sourceItem?.replyTargetPubkey,
+              baseRelayUrls: [
+                ...readRelayUrls,
+                ...(sourceItem?.replyTargetRelayHints ?? []),
+              ],
+              eventId,
+              transport: debugRelayTransport,
+              options: { allowDirectFallback: true },
+            }),
+          };
+        }),
+      );
+
+      if (cancelled) {
+        return;
+      }
+
+      const foundEntries = settled
+        .filter((entry): entry is { eventId: string; event: NostrEvent } => Boolean(entry.event))
+      const nextItems = foundEntries
+        .map(({ event }) =>
+          buildReplyPreviewTimelineItem(
+            event,
+            profileSummariesRef.current.get(event.pubkey) ?? null,
+          ))
+        .filter((item) => !referenceItemIds.has(item.id));
+
+      for (const eventId of missingReplyTargetIds) {
+        inflightReplyPreviewIdsRef.current.delete(eventId);
+      }
+
+      for (const entry of foundEntries) {
+        resolvedReplyPreviewIdsRef.current.add(entry.eventId);
+      }
+
+      if (
+        foundEntries.length < missingReplyTargetIds.length
+        && typeof window !== "undefined"
+      ) {
+        retryTimerId = window.setTimeout(() => {
+          setReplyPreviewRetryRevision((current) => current + 1);
+        }, 1_500);
+      }
+
+      if (nextItems.length === 0) {
+        return;
+      }
+
+      setReplyPreviewItems((current) => {
+        const knownIds = new Set(current.map((item) => item.id));
+        const uniqueItems = nextItems.filter((item) => !knownIds.has(item.id));
+
+        return uniqueItems.length === 0 ? current : [...current, ...uniqueItems];
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+
+      if (retryTimerId !== null && typeof window !== "undefined") {
+        window.clearTimeout(retryTimerId);
+      }
+    };
+  }, [
+    debugRelayTransport,
+    profileSummariesRef,
+    readRelayUrls,
+    readyReadRelayCount,
+    replyPreviewRetryRevision,
+    timelineReferenceItems,
+    visibleTimeline,
+  ]);
   const relayButtonTitle = buildRelayButtonTitle(activeRelayUrls, relayStatus);
   const readyWriteRelayCount = countReadyWriteRelays();
   const canSendReaction = canSignEvents;
@@ -720,6 +938,16 @@ export function App() {
     notifyError,
     reactionError,
   );
+  const activeTimelineDiagnostics =
+    timelineView === "follow"
+      ? [followDiagnostic, accountDiagnostic]
+      : timelineView === "account"
+        ? [accountDiagnostic]
+        : timelineView === "notify"
+          ? [notifyDiagnostic]
+          : timelineView === "reaction"
+            ? [reactionDiagnostic]
+            : [];
 
   return (
     <main className="shell">
@@ -794,19 +1022,24 @@ export function App() {
           accountTabEnabled={accountTabEnabled}
           canOpenPersonalTimeline={canOpenPersonalTimeline}
           canSendReaction={canSendReaction}
+          developerModeEnabled={developerModeEnabled}
           emptyMessage={timelineEmptyMessage}
           isProfileImageEnabled={profileImagesEnabled}
           isPublishing={isPublishing}
           notifyTabEnabled={notifyTabEnabled}
+          onCopyEventId={handleCopyEventId}
           pendingReactionEventIds={pendingReactionEventIds}
           readyWriteRelayCount={readyWriteRelayCount}
           reactionTabEnabled={reactionTabEnabled}
           relayButtonTitle={relayButtonTitle}
-            timelineView={timelineView}
-            onReact={handleReaction}
-            onTimelineViewChange={handleTimelineViewChange}
-            visibleTimeline={visibleTimeline}
-          />
+          timelineDiagnostics={activeTimelineDiagnostics}
+          timelineReferenceItems={timelineReferenceItems}
+          timelineView={timelineView}
+          onReact={handleReaction}
+          onTimelineViewChange={handleTimelineViewChange}
+          onViewEventJson={handleViewEventJson}
+          visibleTimeline={visibleTimeline}
+        />
         </>
       )}
 
@@ -836,6 +1069,41 @@ export function App() {
         onUseExtension={handleUseNip07FromDialog}
         onUseNsec={handleUseNsecFromDialog}
       />
+      <EventJsonDialog
+        isOpen={eventJsonDialogState.isOpen}
+        jsonText={eventJsonDialogState.jsonText}
+        title={eventJsonDialogState.title}
+        onClose={() => {
+          setEventJsonDialogState((current) => ({
+            ...current,
+            isOpen: false,
+          }));
+        }}
+      />
     </main>
   );
+}
+
+function buildReplyPreviewTimelineItem(
+  event: NostrEvent,
+  profile: TimelineItem["profile"],
+): TimelineItem {
+  return {
+    id: event.id,
+    pubkey: event.pubkey,
+    createdAt: event.created_at,
+    kind: event.kind,
+    content: event.content,
+    isReply: false,
+    replyTargetEventId: null,
+    replyTargetPubkey: null,
+    replyTargetRelayHints: [],
+    replyTargetProfile: null,
+    replyContextPubkeys: [],
+    likeCount: 0,
+    kusaCount: 0,
+    moreReactionCount: 0,
+    otherReactionSummaries: [],
+    profile,
+  };
 }

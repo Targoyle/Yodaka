@@ -1,11 +1,16 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type MutableRefObject,
 } from "react";
-import type { AuxiliaryLoadState, TimelineView } from "../app/types";
+import type {
+  AuxiliaryLoadState,
+  AuxiliaryTimelineDiagnostic,
+  TimelineView,
+} from "../app/types";
 import {
   fetchFollowTargets,
   fetchRecentNotesForFollowTargets,
@@ -50,6 +55,15 @@ export function useFollowTimeline(args: UseFollowTimelineArgs) {
   const [followSourceKey, setFollowSourceKey] = useState<string | null>(null);
   const [followError, setFollowError] = useState<string | null>(null);
   const [followTimeline, setFollowTimeline] = useState<TimelineItem[]>([]);
+  const [followFetchMeta, setFollowFetchMeta] = useState<{
+    targetCount: number;
+    noteCount: number;
+    lastFetchedAt: number | null;
+  }>({
+    targetCount: 0,
+    noteCount: 0,
+    lastFetchedAt: null,
+  });
   const oneShotTransport = useTemporaryRelayTransport({
     active: args.timelineView === "follow",
     relayBootstrapDeferred: args.relayBootstrapDeferred,
@@ -188,6 +202,11 @@ export function useFollowTimeline(args: UseFollowTimelineArgs) {
           });
         }
 
+        setFollowFetchMeta({
+          targetCount: targets.length,
+          noteCount: events.length,
+          lastFetchedAt: Date.now(),
+        });
         setFollowLoadState("ready");
       } catch (error) {
         if (cancelled) {
@@ -262,14 +281,46 @@ export function useFollowTimeline(args: UseFollowTimelineArgs) {
     setFollowSourceKey(null);
     setFollowError(null);
     setFollowTimeline([]);
+    setFollowFetchMeta({
+      targetCount: 0,
+      noteCount: 0,
+      lastFetchedAt: null,
+    });
   }, []);
 
   function primeFollowLoad() {
     setFollowLoadState((current) => (current === "idle" ? "loading" : current));
   }
 
+  const followDiagnostic = useMemo<AuxiliaryTimelineDiagnostic>(
+    () => ({
+      label: "Follow",
+      loadState: followLoadState,
+      relayCount: args.readRelayUrls.length,
+      readyReadRelayCount: args.readyReadRelayCount,
+      itemCount: followTimeline.length,
+      summary:
+        followFetchMeta.lastFetchedAt === null
+          ? null
+          : `targets ${followFetchMeta.targetCount} / notes ${followFetchMeta.noteCount}`,
+      lastFetchedAt: followFetchMeta.lastFetchedAt,
+      error: followError,
+    }),
+    [
+      args.readRelayUrls.length,
+      args.readyReadRelayCount,
+      followError,
+      followFetchMeta.lastFetchedAt,
+      followFetchMeta.noteCount,
+      followFetchMeta.targetCount,
+      followLoadState,
+      followTimeline.length,
+    ],
+  );
+
   return {
     clearFollowError,
+    followDiagnostic,
     followError,
     followLoadState,
     followTimeline,

@@ -33,7 +33,9 @@ export type TimelineItem = {
   kind: number;
   content: string;
   isReply: boolean;
+  replyTargetEventId?: string | null;
   replyTargetPubkey: string | null;
+  replyTargetRelayHints?: string[];
   replyTargetProfile: TimelineProfile | null;
   replyContextPubkeys: string[];
   likeCount: number;
@@ -220,7 +222,9 @@ export async function listTimeline(limit: number, until: number | null) {
     kind: number;
     content: string;
     is_reply: boolean;
+    reply_target_event_id?: string | null;
     reply_target_pubkey?: string | null;
+    reply_target_relay_hints?: string[];
     reply_target_profile?: {
       name: string | null;
       display_name: string | null;
@@ -248,7 +252,9 @@ export async function listTimeline(limit: number, until: number | null) {
     kind: item.kind,
     content: item.content,
     isReply: item.is_reply,
+    replyTargetEventId: item.reply_target_event_id ?? null,
     replyTargetPubkey: item.reply_target_pubkey ?? null,
+    replyTargetRelayHints: item.reply_target_relay_hints ?? [],
     replyTargetProfile: item.reply_target_profile
       ? {
           name: item.reply_target_profile.name,

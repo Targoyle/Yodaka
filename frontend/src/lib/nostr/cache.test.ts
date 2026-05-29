@@ -7,7 +7,7 @@ import type { NostrEvent } from "./relay";
 type CacheModule = typeof import("./cache");
 
 const DB_NAME = "nostr-client-v1";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const RELAY_URL = "wss://yabu.me";
 const SECOND_RELAY_URL = "wss://nos.lol";
 const STORE_EVENTS = "events";
@@ -15,6 +15,7 @@ const STORE_PROFILES = "profiles";
 const STORE_RELAYS = "relays";
 const STORE_SETTINGS = "settings";
 const INDEX_EVENTS_BY_RELAY_KIND_CREATED_AT = "byRelayKindCreatedAt";
+const INDEX_PROFILES_BY_FETCHED_AT = "byFetchedAt";
 const SETTING_SCHEMA_VERSION = "schema_version";
 
 let cache: CacheModule;
@@ -396,13 +397,70 @@ describe("cache", () => {
         pubkey: secondPubkey,
         createdAt: 210,
         eventId: secondProfile.id,
+        summary: {
+          name: null,
+          displayName: "second",
+          picture: null,
+        },
       }),
       expect.objectContaining({
         pubkey: firstPubkey,
         createdAt: 200,
         eventId: firstProfile.id,
+        summary: {
+          name: null,
+          displayName: "first",
+          picture: null,
+        },
       }),
     ]);
+  });
+
+  it("旧 raw profile record は読み込み時に summary-only へ移行する", async () => {
+    const pubkey = hexString(33, 64);
+
+    await putProfileRecord({
+      pubkey,
+      eventId: hexString(34, 64),
+      createdAt: 220,
+      fetchedAt: 100,
+      rawContent: JSON.stringify({
+        name: "rain_256",
+        display_name: "あめ",
+      }),
+    });
+
+    const [record] = await cache.loadCachedProfilesByPubkeys([pubkey]);
+
+    expect(record).toEqual(
+      expect.objectContaining({
+        pubkey,
+        eventId: hexString(34, 64),
+        createdAt: 220,
+        summary: {
+          name: "rain_256",
+          displayName: "あめ",
+          picture: null,
+        },
+      }),
+    );
+
+    const persisted = await readProfileRecord(pubkey);
+
+    expect(persisted).toEqual(
+      expect.objectContaining({
+        pubkey,
+        eventId: hexString(34, 64),
+        createdAt: 220,
+        summary: {
+          name: "rain_256",
+          displayName: "あめ",
+          picture: null,
+        },
+      }),
+    );
+    expect(persisted).not.toHaveProperty("rawContent");
+    expect(persisted).not.toHaveProperty("rawJson");
   });
 
   it("summary-only profile cache を保存して読み込める", async () => {
@@ -433,6 +491,65 @@ describe("cache", () => {
         },
       }),
     ]);
+  });
+
+  it("persistAcceptedEvent(kind 0) は summary-only で保存する", async () => {
+    const event = createEvent({
+      pubkey: hexString(42, 64),
+      kind: 0,
+      created_at: 320,
+      content: JSON.stringify({
+        name: "rain_256",
+        display_name: "あめ",
+      }),
+    });
+
+    await cache.persistAcceptedEvent({ relayUrl: RELAY_URL, event });
+
+    const persisted = await readProfileRecord(event.pubkey);
+
+    expect(persisted).toEqual(
+      expect.objectContaining({
+        pubkey: event.pubkey,
+        eventId: event.id,
+        createdAt: 320,
+        summary: {
+          name: "rain_256",
+          displayName: "あめ",
+          picture: null,
+        },
+      }),
+    );
+    expect(persisted).not.toHaveProperty("rawContent");
+    expect(persisted).not.toHaveProperty("rawJson");
+  });
+
+  it("参照した profile は fetchedAt を更新し、prune で残りやすくなる", async () => {
+    await seedProfileRecords(1, 2_000);
+
+    const preservedPubkey = hexString(1, 64);
+    const droppedPubkey = hexString(2, 64);
+
+    await cache.loadCachedProfilesByPubkeys([preservedPubkey]);
+
+    await cache.persistProfileSummary({
+      pubkey: hexString(9_999, 64),
+      eventId: hexString(19_999, 64),
+      createdAt: 9_999,
+      profile: {
+        name: "new-profile",
+        displayName: "new-profile",
+        picture: null,
+      },
+    });
+
+    const [preservedRecords, droppedRecords] = await Promise.all([
+      cache.loadCachedProfilesByPubkeys([preservedPubkey]),
+      cache.loadCachedProfilesByPubkeys([droppedPubkey]),
+    ]);
+
+    expect(preservedRecords).toHaveLength(1);
+    expect(droppedRecords).toHaveLength(0);
   });
 
   it("clearCacheDatabase で IndexedDB を全消去できる", async () => {
@@ -563,6 +680,60 @@ async function seedFeedEvents(relayUrl: string, startCreatedAt: number, count: n
   db.close();
 }
 
+async function seedProfileRecords(startSequence: number, count: number) {
+  const db = await openDatabase();
+
+  await withTransaction(db, [STORE_PROFILES], "readwrite", async (transaction) => {
+    const profileStore = transaction.objectStore(STORE_PROFILES);
+
+    for (let offset = 0; offset < count; offset += 1) {
+      const sequence = startSequence + offset;
+
+      await requestToPromise(
+        profileStore.put({
+          pubkey: hexString(sequence, 64),
+          eventId: hexString(sequence + 10_000, 64),
+          createdAt: sequence,
+          fetchedAt: sequence,
+          summary: {
+            name: `name-${sequence}`,
+            displayName: `display-${sequence}`,
+            picture: null,
+          },
+        }),
+      );
+    }
+  });
+
+  db.close();
+}
+
+async function putProfileRecord(record: Record<string, unknown>) {
+  const db = await openDatabase();
+
+  await withTransaction(db, [STORE_PROFILES], "readwrite", async (transaction) => {
+    await requestToPromise(transaction.objectStore(STORE_PROFILES).put(record));
+  });
+
+  db.close();
+}
+
+async function readProfileRecord(pubkey: string) {
+  const db = await openDatabase();
+  const record = await withTransaction(
+    db,
+    [STORE_PROFILES],
+    "readonly",
+    async (transaction) =>
+      requestToPromise<Record<string, unknown> | undefined>(
+        transaction.objectStore(STORE_PROFILES).get(pubkey),
+      ),
+  );
+
+  db.close();
+  return record;
+}
+
 async function putRawRelayRecord(record: Record<string, unknown>) {
   const db = await openDatabase();
 
@@ -647,6 +818,7 @@ function openDatabase() {
           keyPath: "pubkey",
         });
         store.createIndex("byCreatedAt", "createdAt");
+        store.createIndex(INDEX_PROFILES_BY_FETCHED_AT, "fetchedAt");
       }
 
       if (!database.objectStoreNames.contains(STORE_RELAYS)) {

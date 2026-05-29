@@ -434,6 +434,45 @@ describe("RelayCoordinator", () => {
       ],
     } satisfies Partial<RelayPublishError>);
   });
+
+  it("publish の auth-required / restricted を user-facing message に整形する", async () => {
+    const coordinator = createRelayCoordinator();
+
+    coordinator.connect();
+
+    const firstSocket = MockWebSocket.instances[0];
+    const secondSocket = MockWebSocket.instances[1];
+    firstSocket.emitOpen();
+    secondSocket.emitOpen();
+    await flushAsync();
+
+    const event = createEvent({
+      id: "auth-required-event-id",
+      pubkey: "expected-author",
+      content: "auth required",
+    });
+    const publishPromise = coordinator.publishEvent(event);
+
+    firstSocket.emitMessage(JSON.stringify(["OK", event.id, false, "auth-required: login first"]));
+    secondSocket.emitMessage(JSON.stringify(["OK", event.id, false, "restricted: paid users only"]));
+
+    await expect(publishPromise).rejects.toMatchObject({
+      name: "RelayPublishError",
+      message:
+        "2 relay への publish が失敗しました: wss://yabu.me: relay が認証を要求しています: login first",
+      rejectedRelayUrls: ["wss://yabu.me", "wss://nos.lol"],
+      errors: [
+        {
+          relayUrl: "wss://yabu.me",
+          message: "auth-required: login first",
+        },
+        {
+          relayUrl: "wss://nos.lol",
+          message: "restricted: paid users only",
+        },
+      ],
+    } satisfies Partial<RelayPublishError>);
+  });
 });
 
 function createRelayCoordinator(

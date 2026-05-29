@@ -6,7 +6,11 @@ import {
   useState,
   type MutableRefObject,
 } from "react";
-import type { AuxiliaryLoadState, TimelineView } from "../app/types";
+import type {
+  AuxiliaryLoadState,
+  AuxiliaryTimelineDiagnostic,
+  TimelineView,
+} from "../app/types";
 import { fetchRecentNotifyEventsByPubkey } from "../lib/nostr/contacts";
 import { findReactionTargetId } from "../lib/nostr/contacts";
 import type { NostrEvent } from "../lib/nostr/relay";
@@ -31,6 +35,7 @@ type UseNotifyTimelineArgs = {
   isResolvingSignerPubkey: boolean;
   manualPubkey: string | null;
   markSignerUnavailable: () => void;
+  notifyTabEnabled: boolean;
   profileSummariesRef: MutableRefObject<Map<string, TimelineProfile>>;
   readRelayUrls: string[];
   relayBootstrapDeferred: boolean;
@@ -51,8 +56,20 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
   const [notifyTimeline, setNotifyTimeline] = useState<TimelineItem[]>([]);
   const [notifyEventIds, setNotifyEventIds] = useState<string[]>([]);
   const [refreshRevision, setRefreshRevision] = useState(0);
+  const [notifyFetchMeta, setNotifyFetchMeta] = useState<{
+    notificationCount: number;
+    resolvedTargetCount: number;
+    lastFetchedAt: number | null;
+  }>({
+    notificationCount: 0,
+    resolvedTargetCount: 0,
+    lastFetchedAt: null,
+  });
+  const shouldPrefetchNotify =
+    args.notifyTabEnabled
+    && Boolean(args.viewerPubkey);
   const oneShotTransport = useTemporaryRelayTransport({
-    active: args.timelineView === "notify",
+    active: args.timelineView === "notify" || shouldPrefetchNotify,
     relayBootstrapDeferred: args.relayBootstrapDeferred,
     relayCoordinatorRef: args.relayCoordinatorRef,
     readyReadRelayCount: args.readyReadRelayCount,
@@ -85,7 +102,10 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
   }, [notifyTimeline]);
 
   useEffect(() => {
-    if (args.relayBootstrapDeferred || args.timelineView !== "notify") {
+    if (
+      args.relayBootstrapDeferred
+      || (args.timelineView !== "notify" && !shouldPrefetchNotify)
+    ) {
       return;
     }
 
@@ -96,14 +116,14 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [args.relayBootstrapDeferred, args.timelineView]);
+  }, [args.relayBootstrapDeferred, args.timelineView, shouldPrefetchNotify]);
 
   useEffect(() => {
     if (args.relayBootstrapDeferred) {
       return;
     }
 
-    if (args.timelineView !== "notify") {
+    if (args.timelineView !== "notify" && !shouldPrefetchNotify) {
       return;
     }
 
@@ -201,6 +221,11 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
 
         setNotifyEventIds(notificationEvents.map((event) => event.id));
         setNotifyTimeline(nextItems);
+        setNotifyFetchMeta({
+          notificationCount: notificationEvents.length,
+          resolvedTargetCount: reactionTargetEventsByReactionId.size,
+          lastFetchedAt: Date.now(),
+        });
         setNotifyLoadState("ready");
       } catch (error) {
         if (cancelled) {
@@ -226,6 +251,7 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
     args.accountTimeline,
     args.isResolvingSignerPubkey,
     args.manualPubkey,
+    args.notifyTabEnabled,
     args.relayBootstrapDeferred,
     args.relayConfigurationKey,
     args.signerAvailable,
@@ -237,6 +263,7 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
     accountRelayUrls,
     oneShotTransport.ready,
     oneShotTransport.relayTransport,
+    shouldPrefetchNotify,
   ]);
 
   useEffect(() => {
@@ -286,6 +313,11 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
     setNotifyTimeline([]);
     setNotifyEventIds([]);
     setRefreshRevision(0);
+    setNotifyFetchMeta({
+      notificationCount: 0,
+      resolvedTargetCount: 0,
+      lastFetchedAt: null,
+    });
     knownNotifyTargetEventIdsRef.current = new Set();
     notifyTimelineRef.current = [];
   }, []);
@@ -295,8 +327,35 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
     setRefreshRevision((current) => current + 1);
   }
 
+  const notifyDiagnostic = useMemo<AuxiliaryTimelineDiagnostic>(
+    () => ({
+      label: "Notify",
+      loadState: notifyLoadState,
+      relayCount: accountRelayUrls.length,
+      readyReadRelayCount: args.readyReadRelayCount,
+      itemCount: notifyTimeline.length,
+      summary:
+        notifyFetchMeta.lastFetchedAt === null
+          ? null
+          : `events ${notifyFetchMeta.notificationCount} / targets ${notifyFetchMeta.resolvedTargetCount}`,
+      lastFetchedAt: notifyFetchMeta.lastFetchedAt,
+      error: notifyError,
+    }),
+    [
+      accountRelayUrls.length,
+      args.readyReadRelayCount,
+      notifyError,
+      notifyFetchMeta.lastFetchedAt,
+      notifyFetchMeta.notificationCount,
+      notifyFetchMeta.resolvedTargetCount,
+      notifyLoadState,
+      notifyTimeline.length,
+    ],
+  );
+
   return {
     clearNotifyError,
+    notifyDiagnostic,
     notifyError,
     notifyLoadState,
     notifyTimeline,

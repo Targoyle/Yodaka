@@ -762,6 +762,25 @@ select {
   margin: 0;
 }
 
+.timeline-diagnostics {
+  display: grid;
+  gap: 4px;
+  margin: -2px 0 12px;
+}
+
+.timeline-diagnostic-line {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.timeline-diagnostic-label {
+  font-weight: 700;
+  color: var(--text-secondary);
+  margin-right: 8px;
+}
+
 .view-switcher {
   display: inline-flex;
   align-items: center;
@@ -1016,7 +1035,7 @@ select {
 .timeline-card {
   min-width: 0;
   position: relative;
-  overflow: hidden;
+  overflow: visible;
   padding: 16px;
   border-radius: 16px;
   background: var(--card-bg);
@@ -1126,11 +1145,39 @@ select {
   word-break: break-word;
 }
 
+.timeline-reply-preview {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--card-border);
+  background: var(--input-bg);
+}
+
+.timeline-reply-preview-label {
+  margin-bottom: 4px;
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.timeline-reply-preview-text {
+  margin: 0;
+  font-size: 0.92rem;
+  line-height: 1.45;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 .timeline-reply-bands {
   position: absolute;
   inset-block: 0;
   inset-inline-start: 0;
   pointer-events: none;
+  border-start-start-radius: 16px;
+  border-end-start-radius: 16px;
+  overflow: hidden;
 }
 
 .timeline-actions {
@@ -1138,6 +1185,54 @@ select {
   align-items: center;
   gap: 12px;
   justify-content: flex-end;
+}
+
+.timeline-debug-menu-wrap {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.timeline-debug-menu-button {
+  min-width: 36px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--theme-switch-border);
+  background: var(--theme-switch-bg);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.timeline-debug-menu-popover {
+  position: absolute;
+  inset-block-start: auto;
+  inset-block-end: calc(100% + 8px);
+  inset-inline-end: 0;
+  z-index: 12;
+  min-width: 148px;
+  padding: 6px;
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  background: var(--settings-menu-bg);
+  box-shadow: var(--panel-shadow);
+  display: grid;
+  gap: 4px;
+}
+
+.timeline-debug-menu-item {
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.timeline-debug-menu-item:hover {
+  background: var(--theme-button-hover-bg);
 }
 
 .timeline-reaction-button {
@@ -1315,6 +1410,21 @@ select {
 
 .dialog-input::placeholder {
   color: var(--placeholder);
+}
+
+.event-json-pre {
+  margin: 0;
+  max-height: min(65vh, 560px);
+  overflow: auto;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid var(--input-border);
+  background: var(--input-bg);
+  font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+  font-size: 0.84rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .dialog-input:focus-visible {

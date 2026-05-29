@@ -31,6 +31,7 @@ import {
 } from "../lib/ui/formatters";
 
 type UsePublishArgs = {
+  adoptNip07SignerPubkey: (pubkey: string) => Promise<string>;
   applyRelayPublishDiagnostics: (result: RelayPublishResult) => void;
   countReadyWriteRelays: () => number;
   createActiveSigner: () => NostrSigner | null;
@@ -44,6 +45,7 @@ type UsePublishArgs = {
   scheduleRefreshRef: MutableRefObject<() => void>;
   selectReactionRelayHint: () => string | null;
   signerPubkey: string | null;
+  viewerPubkey: string | null;
   writeRelayUrls: string[];
 };
 
@@ -90,7 +92,7 @@ export function usePublish(args: UsePublishArgs) {
     setPublishMessage("署名を要求しています");
 
     try {
-      const pubkey = await args.ensureSignerPubkey();
+      const pubkey = await resolveSigningPubkey(args);
 
       const unsigned = await buildUnsignedEvent({
         pubkey,
@@ -101,6 +103,9 @@ export function usePublish(args: UsePublishArgs) {
       const signerEvent = toSignerEvent(unsigned);
       const signed = await signer.signEvent(signerEvent);
       assertSignedEventMatchesUnsigned(signerEvent, signed);
+      if (!args.signerPubkey) {
+        await args.adoptNip07SignerPubkey(signed.pubkey);
+      }
 
       const verified = await verifySignedEvent({
         id: signed.id,
@@ -234,16 +239,10 @@ export function usePublish(args: UsePublishArgs) {
     setPublishMessage("リアクション署名を要求しています");
 
     try {
-      const pubkey = args.signerPubkey
-        ? await args.ensureSignerPubkey()
-        : await args.requestSignerPubkeyFromUserGesture();
+      const pubkey = await resolveSigningPubkey(args);
       const reactionRelayHint = args.selectReactionRelayHint();
       const reactionContent = buildReactionContent(reactionIntent);
       const customEmojiTags = buildReactionCustomEmojiTags(reactionIntent);
-
-      if (!pubkey) {
-        throw new Error("署名ログインから公開鍵を取得できませんでした");
-      }
 
       const unsigned = await buildUnsignedEvent({
         pubkey,
@@ -263,6 +262,9 @@ export function usePublish(args: UsePublishArgs) {
       const signerEvent = toSignerEvent(unsigned);
       const signed = await signer.signEvent(signerEvent);
       assertSignedEventMatchesUnsigned(signerEvent, signed);
+      if (!args.signerPubkey) {
+        await args.adoptNip07SignerPubkey(signed.pubkey);
+      }
 
       const verified = await verifySignedEvent({
         id: signed.id,
@@ -383,6 +385,27 @@ function toSignerEvent(event: UnsignedEvent): UnsignedNostrEvent {
     tags: event.tags,
     content: event.content,
   };
+}
+
+async function resolveSigningPubkey(args: Pick<
+  UsePublishArgs,
+  "ensureSignerPubkey" | "requestSignerPubkeyFromUserGesture" | "signerPubkey" | "viewerPubkey"
+>) {
+  if (args.signerPubkey) {
+    return args.ensureSignerPubkey();
+  }
+
+  if (args.viewerPubkey) {
+    return args.viewerPubkey;
+  }
+
+  const pubkey = await args.requestSignerPubkeyFromUserGesture();
+
+  if (!pubkey) {
+    throw new Error("署名ログインから公開鍵を取得できませんでした");
+  }
+
+  return pubkey;
 }
 
 function toRelayEvent(event: SignedNostrEvent): NostrEvent {
