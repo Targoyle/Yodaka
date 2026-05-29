@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import {
   formatAuthorLabel,
   formatAuthorNameLabel,
@@ -7,6 +8,10 @@ import {
   formatReplyContextLabel,
 } from "../lib/nostr/profilePresentation";
 import { sanitizeProfilePictureUrl } from "../lib/nostr/profile";
+import {
+  formatReactionContentLabel,
+  type ReactionIntent,
+} from "../lib/nostr/reaction";
 import type { TimelineItem } from "../lib/wasm/client";
 import { buildAvatarStyle, pubkeyHexColor } from "../lib/ui/avatarStyle";
 import { formatCreatedAt, formatCreatedAtParts } from "../lib/ui/formatters";
@@ -22,7 +27,7 @@ type TimelineCardProps = {
   isReactionPending: boolean;
   item: TimelineItem;
   onPauseTimelineDisplay: () => void;
-  onReact: (item: TimelineItem) => void | Promise<void>;
+  onReact: (item: TimelineItem, reactionIntent: ReactionIntent) => void | Promise<void>;
   onResumeTimelineDisplay: () => void;
   readyWriteRelayCount: number;
   timelineView: TimelineView;
@@ -72,6 +77,12 @@ export function TimelineCard(props: TimelineCardProps) {
     props.item,
   );
   const showReactionButton = props.item.kind === 1;
+  const likeCount = props.item.likeCount;
+  const kusaCount = props.item.kusaCount ?? 0;
+  const moreReactionCount = props.item.moreReactionCount ?? 0;
+  const otherReactionSummaries = props.item.otherReactionSummaries ?? [];
+  const [isMoreReactionsOpen, setIsMoreReactionsOpen] = useState(false);
+  const moreReactionPopoverRef = useRef<HTMLDivElement | null>(null);
   const reactionButtonDisabled =
     props.isPublishing
     || props.isReactionPending
@@ -81,7 +92,60 @@ export function TimelineCard(props: TimelineCardProps) {
     ? "リアクション送信には署名可能なログインが必要です"
     : props.readyWriteRelayCount === 0
       ? "write relay 接続がまだ準備できていません"
-      : "empty リアクション (like / upvote) を送信";
+      : props.isReactionPending
+        ? "リアクション送信中です"
+        : null;
+  const moreReactionSummaryTitle = otherReactionSummaries
+    .map((summary) => formatExpandedReactionSummary(summary.content, summary.count))
+    .join(" ");
+
+  useEffect(() => {
+    setIsMoreReactionsOpen(false);
+  }, [props.item.id]);
+
+  useEffect(() => {
+    if (!isMoreReactionsOpen || typeof document === "undefined") {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!moreReactionPopoverRef.current?.contains(event.target as Node)) {
+        setIsMoreReactionsOpen(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [isMoreReactionsOpen]);
+
+  function handleMoreReactionsMouseEnter() {
+    if (isCoarsePointerDevice() || otherReactionSummaries.length === 0) {
+      return;
+    }
+
+    props.onPauseTimelineDisplay();
+    setIsMoreReactionsOpen(true);
+  }
+
+  function handleMoreReactionsMouseLeave() {
+    if (isCoarsePointerDevice()) {
+      return;
+    }
+
+    props.onResumeTimelineDisplay();
+    setIsMoreReactionsOpen(false);
+  }
+
+  function handleMoreReactionsClick() {
+    if (!isCoarsePointerDevice() || otherReactionSummaries.length === 0) {
+      return;
+    }
+
+    setIsMoreReactionsOpen((current) => !current);
+  }
 
   return (
     <li
@@ -170,23 +234,69 @@ export function TimelineCard(props: TimelineCardProps) {
       <p className="timeline-text">{displayContent}</p>
       <div className="timeline-actions">
         {showReactionButton ? (
-          <button
-            type="button"
-            className="timeline-reaction-button"
-            disabled={reactionButtonDisabled}
-            title={reactionButtonTitle}
-            onMouseEnter={props.onPauseTimelineDisplay}
-            onMouseLeave={props.onResumeTimelineDisplay}
-            onClick={() => {
-              void props.onReact(props.item);
-            }}
-          >
-            <span aria-hidden="true">♡</span>
-            <span>{props.item.likeCount}</span>
-            <span className="timeline-reaction-label">
-              {props.isReactionPending ? "送信中..." : "Like"}
-            </span>
-          </button>
+          <>
+            <button
+              type="button"
+              className="timeline-reaction-button"
+              disabled={reactionButtonDisabled}
+              title={reactionButtonTitle ?? "like / upvote を送信"}
+              aria-label={`★ ${likeCount}`}
+              onMouseEnter={props.onPauseTimelineDisplay}
+              onMouseLeave={props.onResumeTimelineDisplay}
+              onClick={() => {
+                void props.onReact(props.item, "like");
+              }}
+            >
+              <span aria-hidden="true">★</span>
+              <span>{likeCount}</span>
+            </button>
+            <button
+              type="button"
+              className="timeline-reaction-button"
+              disabled={reactionButtonDisabled}
+              title={reactionButtonTitle ?? "草リアクションを送信"}
+              aria-label={`草 ${kusaCount}`}
+              onMouseEnter={props.onPauseTimelineDisplay}
+              onMouseLeave={props.onResumeTimelineDisplay}
+              onClick={() => {
+                void props.onReact(props.item, "kusa");
+              }}
+            >
+              <span aria-hidden="true">草</span>
+              <span>{kusaCount}</span>
+            </button>
+            {moreReactionCount > 0 ? (
+              <div
+                ref={moreReactionPopoverRef}
+                className="timeline-reaction-summary-wrap"
+                onMouseEnter={handleMoreReactionsMouseEnter}
+                onMouseLeave={handleMoreReactionsMouseLeave}
+              >
+                <button
+                  type="button"
+                  className="timeline-reaction-summary"
+                  title={moreReactionSummaryTitle || "その他のリアクション数"}
+                  aria-expanded={isMoreReactionsOpen}
+                  onClick={handleMoreReactionsClick}
+                >
+                  {`more ${moreReactionCount}`}
+                </button>
+                {isMoreReactionsOpen && otherReactionSummaries.length > 0 ? (
+                  <div className="timeline-reaction-popover" role="list">
+                    {otherReactionSummaries.map((summary) => (
+                      <span
+                        key={`${summary.content}-${summary.count}`}
+                        className="timeline-reaction-popover-item"
+                        role="listitem"
+                      >
+                        {formatExpandedReactionSummary(summary.content, summary.count)}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </>
         ) : null}
         <time
           className="muted timeline-meta"
@@ -246,8 +356,8 @@ function formatTimelineItemContent(
     return item.content;
   }
 
-  if (item.kind === 7 && (item.content === "" || item.content === "+")) {
-    return "♡ Like";
+  if (item.kind === 7) {
+    return formatReactionContentLabel(item.content);
   }
 
   return item.content;
@@ -282,9 +392,19 @@ function formatNotifyLabel(
 }
 
 function formatReactionBadgeLabel(content: string) {
-  if (content === "" || content === "+") {
-    return "Like";
+  return formatReactionContentLabel(content);
+}
+
+function formatExpandedReactionSummary(content: string, count: number) {
+  const label = formatReactionContentLabel(content);
+
+  return count > 1 ? `${label} ${count}` : label;
+}
+
+function isCoarsePointerDevice() {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return false;
   }
 
-  return content;
+  return window.matchMedia("(pointer: coarse)").matches;
 }

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  DIRECT_FALLBACK_RELAY_TRANSPORT,
   buildRelayAuthorMap,
   extractFollowTargets,
   fetchRecentNotifyEventsByPubkey,
@@ -172,6 +173,7 @@ describe("fetchRecentNotesByAuthors", () => {
       ["wss://yabu.me", "wss://nos.lol"],
       ["author-a"],
       20,
+      DIRECT_FALLBACK_RELAY_TRANSPORT,
     );
 
     const [firstSocket, secondSocket] = MockWebSocket.instances;
@@ -190,6 +192,7 @@ describe("fetchRecentNotesByAuthors", () => {
       ["wss://yabu.me", "wss://nos.lol"],
       ["author-a"],
       20,
+      DIRECT_FALLBACK_RELAY_TRANSPORT,
     );
 
     const [firstSocket, secondSocket] = MockWebSocket.instances;
@@ -272,7 +275,19 @@ describe("fetchRecentNotesByAuthors", () => {
     expect(MockWebSocket.instances).toHaveLength(0);
   });
 
-  it("transport が未接続エラーなら direct WS へフォールバックする", async () => {
+  it("transport 未指定では direct WS へ暗黙フォールバックしない", async () => {
+    await expect(
+      fetchRecentNotesByAuthors(
+        ["wss://yabu.me"],
+        ["author-a"],
+        20,
+      ),
+    ).rejects.toThrow("relay から投稿を取得できませんでした: relay one-shot transport is not configured");
+
+    expect(MockWebSocket.instances).toHaveLength(0);
+  });
+
+  it("allowDirectFallback が有効なら未接続エラー時に direct WS へフォールバックする", async () => {
     const requestTemporaryEvents = vi
       .fn()
       .mockRejectedValue(new Error("relay is not connected"));
@@ -282,6 +297,7 @@ describe("fetchRecentNotesByAuthors", () => {
       ["abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"],
       20,
       {
+        allowDirectFallback: true,
         requestTemporaryEvents,
       },
     );
@@ -296,10 +312,30 @@ describe("fetchRecentNotesByAuthors", () => {
     await expect(promise).resolves.toEqual([]);
     expect(requestTemporaryEvents).toHaveBeenCalledTimes(1);
   });
+
+  it("transport がある場合は既定で direct WS へフォールバックしない", async () => {
+    const requestTemporaryEvents = vi
+      .fn()
+      .mockRejectedValue(new Error("relay is not connected"));
+
+    await expect(
+      fetchRecentNotesByAuthors(
+        ["wss://yabu.me"],
+        ["abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"],
+        20,
+        {
+          requestTemporaryEvents,
+        },
+      ),
+    ).resolves.toEqual([]);
+
+    expect(requestTemporaryEvents).toHaveBeenCalledTimes(1);
+    expect(MockWebSocket.instances).toHaveLength(0);
+  });
 });
 
 describe("fetchRecentReactionNotesByAuthors", () => {
-  it("like reaction から target note を ids 指定で取得する", async () => {
+  it("reaction から target note を ids 指定で取得する", async () => {
     const targetEventId = "b".repeat(64);
     const ignoredTargetEventId = "c".repeat(64);
     const author = "a".repeat(64);
@@ -376,7 +412,7 @@ describe("fetchRecentReactionNotesByAuthors", () => {
           sig: "sig-3",
         },
       ],
-      targetIds: [targetEventId],
+      targetIds: [targetEventId, ignoredTargetEventId],
     });
 
     expect(transport.calls).toEqual([
@@ -396,7 +432,7 @@ describe("fetchRecentReactionNotesByAuthors", () => {
         filters: [
           {
             kinds: [1],
-            ids: [targetEventId],
+            ids: [targetEventId, ignoredTargetEventId],
             limit: 20,
           },
         ],

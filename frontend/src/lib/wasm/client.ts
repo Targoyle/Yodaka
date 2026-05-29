@@ -10,6 +10,7 @@ import init, {
   since_hint,
   verify_event,
   verify_and_insert,
+  verify_profile_summary_event,
 } from "@wasm/nostr_wasm.js";
 
 export type UnsignedEvent = {
@@ -36,17 +37,33 @@ export type TimelineItem = {
   replyTargetProfile: TimelineProfile | null;
   replyContextPubkeys: string[];
   likeCount: number;
+  kusaCount?: number;
+  moreReactionCount?: number;
+  otherReactionSummaries?: ReactionSummary[];
   profile: TimelineProfile | null;
   notifyActorPubkey?: string | null;
   notifyActorProfile?: TimelineProfile | null;
   notifyReactionContent?: string | null;
   notifyTargetEventId?: string | null;
+  notifyTargetResolved?: boolean;
+};
+
+export type ReactionSummary = {
+  content: string;
+  count: number;
 };
 
 export type TimelineProfile = {
   name: string | null;
   displayName: string | null;
   picture: string | null;
+};
+
+export type VerifiedProfileEventSummary = {
+  pubkey: string;
+  eventId: string;
+  createdAt: number;
+  profile: TimelineProfile | null;
 };
 
 export type SinceHint = {
@@ -159,6 +176,40 @@ export async function verifySignedEvent(event: SignedEvent) {
   );
 }
 
+export async function verifyProfileSummaryEventRawJson(
+  eventJson: string,
+): Promise<VerifiedProfileEventSummary | null> {
+  await initializeWasm();
+  const json = verify_profile_summary_event(eventJson);
+  const parsed = JSON.parse(json) as {
+    pubkey: string;
+    event_id: string;
+    created_at: number;
+    profile: {
+      name: string | null;
+      display_name: string | null;
+      picture: string | null;
+    } | null;
+  } | null;
+
+  if (!parsed) {
+    return null;
+  }
+
+  return {
+    pubkey: parsed.pubkey,
+    eventId: parsed.event_id,
+    createdAt: parsed.created_at,
+    profile: parsed.profile
+      ? {
+          name: parsed.profile.name,
+          displayName: parsed.profile.display_name,
+          picture: parsed.profile.picture,
+        }
+      : null,
+  };
+}
+
 export async function listTimeline(limit: number, until: number | null) {
   await initializeWasm();
   const json = list_timeline(limit, until ?? undefined);
@@ -177,6 +228,12 @@ export async function listTimeline(limit: number, until: number | null) {
     } | null;
     reply_context_pubkeys?: string[];
     like_count?: number;
+    kusa_count?: number;
+    more_reaction_count?: number;
+    other_reaction_summaries?: Array<{
+      content: string;
+      count: number;
+    }>;
     profile?: {
       name: string | null;
       display_name: string | null;
@@ -201,6 +258,9 @@ export async function listTimeline(limit: number, until: number | null) {
       : null,
     replyContextPubkeys: item.reply_context_pubkeys ?? [],
     likeCount: item.like_count ?? 0,
+    kusaCount: item.kusa_count ?? 0,
+    moreReactionCount: item.more_reaction_count ?? 0,
+    otherReactionSummaries: item.other_reaction_summaries ?? [],
     profile: item.profile
       ? {
           name: item.profile.name,

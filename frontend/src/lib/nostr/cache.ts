@@ -1,3 +1,8 @@
+import type { TimelineProfile } from "../wasm/client";
+import {
+  shouldReplaceProfileSummaryVersion,
+  type ProfileSummaryVersion,
+} from "./profilePresentation";
 import type { NostrEvent } from "./relay";
 
 export type StoredEventRecord = {
@@ -12,11 +17,12 @@ export type StoredEventRecord = {
 
 export type StoredProfileRecord = {
   pubkey: string;
-  rawJson: string;
-  rawContent: string;
+  rawJson?: string;
+  rawContent?: string;
   eventId: string;
   createdAt: number;
   fetchedAt: number;
+  summary?: TimelineProfile | null;
 };
 
 export type StoredRelayRecord = {
@@ -62,7 +68,6 @@ const CACHED_FEED_EVENT_KINDS = [1, 7] as const;
 const MAX_CACHED_FEED_EVENTS_PER_RELAY_KIND = 5_000;
 const MAX_CACHED_PROFILES = 2_000;
 const MAX_REPLAY_FEED_EVENTS_PER_RELAY_KIND = 200;
-const MAX_REPLAY_PROFILES = 256;
 
 let openDatabasePromise: Promise<IDBDatabase | null> | null = null;
 
@@ -125,8 +130,7 @@ export async function replayCachedRelays(args: {
     };
   }
 
-  const [profileRecords, feedRecordsByRelay, relayRecordsList] = await Promise.all([
-    listReplayProfiles(db),
+  const [feedRecordsByRelay, relayRecordsList] = await Promise.all([
     Promise.all(relayUrls.map((relayUrl) => listReplayFeedEvents(db, relayUrl))),
     Promise.all(relayUrls.map((relayUrl, index) => loadRelayRecord(db, relayUrl, index))),
   ]);
@@ -147,18 +151,6 @@ export async function replayCachedRelays(args: {
     relayUrls.map((relayUrl, index) => [relayUrl, relayRecordsList[index] ?? null]),
   );
 
-  let replayedProfiles = 0;
-
-  for (const record of profileRecords) {
-    try {
-      if (await args.insertEventJson(record.rawJson)) {
-        replayedProfiles += 1;
-      }
-    } catch (error) {
-      reportCacheWarning("profile replay", error);
-    }
-  }
-
   let replayedFeedEvents = 0;
 
   for (const record of feedRecords) {
@@ -172,7 +164,7 @@ export async function replayCachedRelays(args: {
   }
 
   return {
-    replayedProfiles,
+    replayedProfiles: 0,
     replayedFeedEvents,
     relayRecords,
   };
@@ -196,6 +188,51 @@ export async function persistAcceptedEvent(args: {
   if (args.event.kind === 0) {
     await upsertProfileRecord(db, args.event);
   }
+}
+
+export async function persistProfileSummary(args: {
+  pubkey: string;
+  eventId: string;
+  createdAt: number;
+  profile: TimelineProfile | null;
+}) {
+  const db = await getCacheDatabase();
+
+  if (!db) {
+    return;
+  }
+
+  await withTransaction(
+    db,
+    [STORE_PROFILES],
+    "readwrite",
+    async (transaction) => {
+      const profileStore = transaction.objectStore(STORE_PROFILES);
+      const current = (await requestToPromise(
+        profileStore.get(args.pubkey),
+      )) as StoredProfileRecord | undefined;
+      const currentVersion = current ? profileRecordVersion(current) : null;
+      const nextVersion: ProfileSummaryVersion = {
+        createdAt: args.createdAt,
+        eventId: args.eventId,
+      };
+
+      if (!shouldReplaceProfileSummaryVersion(currentVersion, nextVersion)) {
+        return;
+      }
+
+      const record: StoredProfileRecord = {
+        pubkey: args.pubkey,
+        eventId: args.eventId,
+        createdAt: args.createdAt,
+        fetchedAt: Date.now(),
+        summary: args.profile,
+      };
+
+      await requestToPromise(profileStore.put(record));
+      await pruneProfiles(profileStore);
+    },
+  );
 }
 
 export async function saveRelayState(record: StoredRelayRecord) {
@@ -471,8 +508,13 @@ async function upsertProfileRecord(db: IDBDatabase, event: NostrEvent) {
       const current = (await requestToPromise(
         profileStore.get(event.pubkey),
       )) as StoredProfileRecord | undefined;
+      const currentVersion = current ? profileRecordVersion(current) : null;
+      const nextVersion: ProfileSummaryVersion = {
+        createdAt: event.created_at,
+        eventId: event.id,
+      };
 
-      if (current && current.createdAt >= event.created_at) {
+      if (!shouldReplaceProfileSummaryVersion(currentVersion, nextVersion)) {
         return;
       }
 
@@ -489,6 +531,13 @@ async function upsertProfileRecord(db: IDBDatabase, event: NostrEvent) {
       await pruneProfiles(profileStore);
     },
   );
+}
+
+function profileRecordVersion(record: StoredProfileRecord): ProfileSummaryVersion {
+  return {
+    createdAt: record.createdAt,
+    eventId: record.eventId,
+  };
 }
 
 async function pruneReplayEvents(
@@ -543,25 +592,6 @@ async function pruneProfiles(profileStore: IDBObjectStore) {
       return excess > 0;
     },
   );
-}
-
-async function listReplayProfiles(db: IDBDatabase) {
-  return withTransaction(db, [STORE_PROFILES], "readonly", async (transaction) => {
-    const profileIndex = transaction
-      .objectStore(STORE_PROFILES)
-      .index(INDEX_PROFILES_BY_CREATED_AT);
-    const records: StoredProfileRecord[] = [];
-
-    await iterateCursor<StoredProfileRecord>(
-      profileIndex.openCursor(null, "prev"),
-      async (cursor) => {
-        records.push(cursor.value);
-        return records.length < MAX_REPLAY_PROFILES;
-      },
-    );
-
-    return records.reverse();
-  });
 }
 
 async function listReplayFeedEvents(db: IDBDatabase, relayUrl: string) {

@@ -187,10 +187,7 @@ export function App() {
   const canSignEvents = activeSignerKind === "local" || signerAvailable;
   const canOpenPersonalTimeline = canSignEvents || Boolean(viewerPubkey);
   const hasAutoSwitchedToFollowRef = useRef(false);
-  const readyReadRelayCount = relayStatus.relayStatuses.filter(
-    (status) =>
-      readRelayUrls.includes(status.relayUrl) && status.phase === "live",
-  ).length;
+  const readyReadRelayCount = relayStatus.readyRelayCount;
 
   const {
     clearFollowError,

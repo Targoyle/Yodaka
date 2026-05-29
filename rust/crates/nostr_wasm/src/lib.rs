@@ -1,6 +1,9 @@
 use std::cell::RefCell;
 
-use nostr_core::{CoreError, LocalSignerSession, Timeline, build_unsigned_event, verify_event};
+use nostr_core::{
+    CoreError, LocalSignerSession, Timeline, build_unsigned_event, verify_event,
+    verify_profile_summary_event,
+};
 use wasm_bindgen::prelude::*;
 
 thread_local! {
@@ -107,6 +110,17 @@ pub fn verify_event_js(event_json: &str) -> Result<bool, JsValue> {
 #[wasm_bindgen(js_name = verify_event)]
 pub fn verify_event_export(event_json: &str) -> Result<bool, JsValue> {
     verify_event_js(event_json)
+}
+
+#[wasm_bindgen]
+pub fn verify_profile_summary_event_js(event_json: &str) -> Result<String, JsValue> {
+    serde_json::to_string(&verify_profile_summary_event(event_json).map_err(map_error)?)
+        .map_err(|error| map_error(CoreError::InvalidEventJson(error)))
+}
+
+#[wasm_bindgen(js_name = verify_profile_summary_event)]
+pub fn verify_profile_summary_event_export(event_json: &str) -> Result<String, JsValue> {
+    verify_profile_summary_event_js(event_json)
 }
 
 #[wasm_bindgen]

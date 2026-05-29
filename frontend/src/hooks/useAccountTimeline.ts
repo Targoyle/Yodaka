@@ -18,6 +18,7 @@ import {
 import type { TimelineItem, TimelineProfile } from "../lib/wasm/client";
 import { fetchRecentNotesByAuthors } from "../lib/nostr/contacts";
 import type { AuxiliaryLoadState, TimelineView } from "../app/types";
+import { useTemporaryRelayTransport } from "./useTemporaryRelayTransport";
 
 type UseAccountTimelineArgs = {
   autoSignerPromptBlocked: boolean;
@@ -45,7 +46,12 @@ export function useAccountTimeline(args: UseAccountTimelineArgs) {
   const [accountSourceKey, setAccountSourceKey] = useState<string | null>(null);
   const [accountError, setAccountError] = useState<string | null>(null);
   const [accountTimeline, setAccountTimeline] = useState<TimelineItem[]>([]);
-  const [retryRevision, setRetryRevision] = useState(0);
+  const oneShotTransport = useTemporaryRelayTransport({
+    active: args.timelineView === "follow" || args.timelineView === "account",
+    relayBootstrapDeferred: args.relayBootstrapDeferred,
+    relayCoordinatorRef: args.relayCoordinatorRef,
+    readyReadRelayCount: args.readyReadRelayCount,
+  });
 
   const ensureViewerPubkeyRef = useRef(args.ensureViewerPubkey);
   const ingestOverlayEventsRef = useRef(args.ingestOverlayEvents);
@@ -73,20 +79,6 @@ export function useAccountTimeline(args: UseAccountTimelineArgs) {
     }
 
     let cancelled = false;
-    let retryTimeoutId: number | null = null;
-
-    if (!args.relayCoordinatorRef.current || args.readyReadRelayCount === 0) {
-      retryTimeoutId = window.setTimeout(() => {
-        setRetryRevision((current) => current + 1);
-      }, 1_000);
-
-      return () => {
-        cancelled = true;
-        if (retryTimeoutId !== null) {
-          window.clearTimeout(retryTimeoutId);
-        }
-      };
-    }
 
     async function loadAccount() {
       if (args.isResolvingSignerPubkey) {
@@ -111,6 +103,12 @@ export function useAccountTimeline(args: UseAccountTimelineArgs) {
         return;
       }
 
+      if (!oneShotTransport.ready) {
+        setAccountLoadState("waiting");
+        setAccountError(null);
+        return;
+      }
+
       setAccountLoadState("loading");
       setAccountError(null);
 
@@ -118,39 +116,6 @@ export function useAccountTimeline(args: UseAccountTimelineArgs) {
         const pubkey = await ensureViewerPubkeyRef.current(args.manualPubkey);
         const accountRelayUrls = loadAccountRelayUrls(args.readRelayUrls);
         const sourceKey = `${accountRelayUrls.join(",")}:${pubkey}`;
-        const relayTransport = {
-          requestTemporaryEvents: async (
-            relayUrl: string,
-            filters: Parameters<RelayCoordinator["requestTemporaryEvents"]>[1],
-            timeoutMs?: number,
-          ) => {
-            const coordinator = args.relayCoordinatorRef.current;
-
-            if (!coordinator) {
-              return [];
-            }
-
-            try {
-              return await coordinator.requestTemporaryEvents(
-                relayUrl,
-                filters,
-                timeoutMs,
-              );
-            } catch (error) {
-              if (
-                error instanceof Error
-                && (
-                  error.message === "relay is not connected"
-                  || error.message === "relay client が初期化されていません"
-                )
-              ) {
-                return [];
-              }
-
-              throw error;
-            }
-          },
-        };
 
         if (import.meta.env.DEV && import.meta.env.MODE !== "test") {
           console.info("[account:load]", {
@@ -172,7 +137,7 @@ export function useAccountTimeline(args: UseAccountTimelineArgs) {
           accountRelayUrls,
           [pubkey],
           args.timelineLimit,
-          relayTransport,
+          oneShotTransport.relayTransport,
         );
 
         if (cancelled) {
@@ -223,9 +188,6 @@ export function useAccountTimeline(args: UseAccountTimelineArgs) {
 
     return () => {
       cancelled = true;
-      if (retryTimeoutId !== null) {
-        window.clearTimeout(retryTimeoutId);
-      }
     };
   }, [
     accountSourceKey,
@@ -242,7 +204,8 @@ export function useAccountTimeline(args: UseAccountTimelineArgs) {
     args.timelineRef,
     args.timelineView,
     args.viewerPubkey,
-    retryRevision,
+    oneShotTransport.ready,
+    oneShotTransport.relayTransport,
   ]);
 
   useEffect(() => {

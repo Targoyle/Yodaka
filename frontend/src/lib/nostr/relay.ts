@@ -509,7 +509,10 @@ export class RelayClient {
     let inspection = inspectRelayMessage(data);
 
     if (!inspection.message) {
-      inspection = this.inspectTemporaryLatestRelayMessage(data) ?? inspection;
+      inspection =
+        this.inspectTemporaryLatestRelayMessage(data)
+        ?? this.inspectProfileRelayMessage(data)
+        ?? inspection;
     }
 
     const { message, diagnostic } = inspection;
@@ -893,6 +896,45 @@ export class RelayClient {
       const subscription = this.temporarySubscriptions.get(first);
 
       if (!subscription || subscription.mode !== "latest") {
+        return null;
+      }
+
+      const parsedEvent = parseReplaceableNostrEvent(second);
+
+      if (!parsedEvent.event) {
+        return null;
+      }
+
+      return {
+        message: {
+          type: "EVENT",
+          subscriptionId: first,
+          event: parsedEvent.event,
+        },
+        diagnostic: null,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private inspectProfileRelayMessage(
+    data: string,
+  ): RelayMessageInspection | null {
+    try {
+      const parsed = JSON.parse(data);
+
+      if (!Array.isArray(parsed) || parsed.length === 0) {
+        return null;
+      }
+
+      const [kind, first, second] = parsed;
+
+      if (kind !== "EVENT" || typeof first !== "string") {
+        return null;
+      }
+
+      if (this.subscriptions.get(first) !== "profiles") {
         return null;
       }
 

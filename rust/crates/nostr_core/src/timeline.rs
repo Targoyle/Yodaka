@@ -14,6 +14,7 @@ pub const SINCE_BUFFER_SEC: u64 = 15;
 pub const MAX_FUTURE_SKEW_SEC: u64 = 600;
 pub const MAX_EVENT_JSON_BYTES: usize = 64 * 1024;
 pub const MAX_CONTENT_BYTES: usize = 8 * 1024;
+pub const MAX_PROFILE_EVENT_CONTENT_BYTES: usize = 64 * 1024;
 pub const MAX_TAGS: usize = 64;
 pub const MAX_TAG_FIELDS_PER_TAG: usize = 16;
 pub const MAX_TAG_VALUE_BYTES: usize = 256;
@@ -36,6 +37,20 @@ pub struct ProfileSummary {
     pub name: Option<String>,
     pub display_name: Option<String>,
     pub picture: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct VerifiedProfileEventSummary {
+    pub pubkey: String,
+    pub event_id: String,
+    pub created_at: u64,
+    pub profile: ProfileSummary,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ReactionSummary {
+    pub content: String,
+    pub count: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +81,9 @@ pub struct TimelineItem {
     pub reply_target_pubkey: Option<String>,
     pub reply_context_pubkeys: Vec<String>,
     pub like_count: u32,
+    pub kusa_count: u32,
+    pub more_reaction_count: u32,
+    pub other_reaction_summaries: Vec<ReactionSummary>,
     pub profile: Option<ProfileSummary>,
 }
 
@@ -133,6 +151,9 @@ impl Timeline {
                     reply_target_pubkey,
                     reply_context_pubkeys,
                     like_count: self.like_count_for_event(&event.id),
+                    kusa_count: self.kusa_count_for_event(&event.id),
+                    more_reaction_count: self.more_reaction_count_for_event(&event.id),
+                    other_reaction_summaries: self.other_reaction_summaries_for_event(&event.id),
                     profile: self.profile_for_pubkey(&event.pubkey),
                 });
             }
@@ -332,6 +353,66 @@ impl Timeline {
             .unwrap_or(0)
     }
 
+    fn kusa_count_for_event(&self, event_id: &str) -> u32 {
+        self.reactions_by_target
+            .get(event_id)
+            .map(|reaction_ids| {
+                reaction_ids
+                    .iter()
+                    .filter_map(|reaction_id| self.reaction_events.get(reaction_id))
+                    .filter(|reaction| is_kusa_reaction_event(reaction))
+                    .count() as u32
+            })
+            .unwrap_or(0)
+    }
+
+    fn more_reaction_count_for_event(&self, event_id: &str) -> u32 {
+        self.reactions_by_target
+            .get(event_id)
+            .map(|reaction_ids| {
+                reaction_ids
+                    .iter()
+                    .filter_map(|reaction_id| self.reaction_events.get(reaction_id))
+                    .filter(|reaction| {
+                        !is_like_reaction_event(reaction)
+                            && !is_kusa_reaction_event(reaction)
+                    })
+                    .count() as u32
+            })
+            .unwrap_or(0)
+    }
+
+    fn other_reaction_summaries_for_event(&self, event_id: &str) -> Vec<ReactionSummary> {
+        let mut counts = self
+            .reactions_by_target
+            .get(event_id)
+            .map(|reaction_ids| {
+                reaction_ids
+                    .iter()
+                    .filter_map(|reaction_id| self.reaction_events.get(reaction_id))
+                    .filter(|reaction| {
+                        !is_like_reaction_event(reaction) && !is_kusa_reaction_event(reaction)
+                    })
+                    .fold(HashMap::<String, u32>::new(), |mut acc, reaction| {
+                        *acc.entry(reaction.content.clone()).or_insert(0) += 1;
+                        acc
+                    })
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(content, count)| ReactionSummary { content, count })
+            .collect::<Vec<_>>();
+
+        counts.sort_by(|left, right| {
+            right
+                .count
+                .cmp(&left.count)
+                .then_with(|| left.content.cmp(&right.content))
+        });
+
+        counts
+    }
+
     fn reply_context_pubkeys_for_event(&self, event: &StoredEvent) -> Vec<String> {
         let mut candidates = Vec::new();
 
@@ -447,6 +528,21 @@ impl Timeline {
 
 pub fn verify_event(event_json: &str) -> Result<bool, CoreError> {
     Ok(verify_event_impl(event_json)?.is_some())
+}
+
+pub fn verify_profile_summary_event(
+    event_json: &str,
+) -> Result<Option<VerifiedProfileEventSummary>, CoreError> {
+    let Some(event) = verify_profile_event_impl(event_json)? else {
+        return Ok(None);
+    };
+
+    Ok(Some(VerifiedProfileEventSummary {
+        pubkey: event.pubkey.to_hex(),
+        event_id: event.id.to_hex(),
+        created_at: event.created_at.as_u64(),
+        profile: ProfileSummary::from_content(&event.content),
+    }))
 }
 
 impl StoredEvent {
@@ -565,6 +661,30 @@ fn validate_verified_event_limits(event: &Event) -> Result<(), CoreError> {
     Ok(())
 }
 
+fn validate_verified_profile_event_limits(event: &Event) -> Result<(), CoreError> {
+    if event.content.as_bytes().len() > MAX_PROFILE_EVENT_CONTENT_BYTES {
+        return Err(CoreError::ContentTooLarge);
+    }
+
+    if event.tags.len() > MAX_TAGS {
+        return Err(CoreError::TooManyTags);
+    }
+
+    for tag in event.tags.iter() {
+        if tag.len() > MAX_TAG_FIELDS_PER_TAG {
+            return Err(CoreError::TooManyTagFields);
+        }
+
+        for value in tag.as_slice() {
+            if value.as_bytes().len() > MAX_METADATA_TAG_VALUE_BYTES {
+                return Err(CoreError::TagValueTooLarge);
+            }
+        }
+    }
+
+    Ok(())
+}
+
 pub(crate) fn validate_content_limit(content: &str) -> Result<(), CoreError> {
     if content.as_bytes().len() > MAX_CONTENT_BYTES {
         return Err(CoreError::ContentTooLarge);
@@ -614,6 +734,33 @@ fn verify_event_impl(event_json: &str) -> Result<Option<Event>, CoreError> {
     }
 
     if validate_verified_event_limits(&event).is_err() {
+        return Ok(None);
+    }
+
+    Ok(Some(event))
+}
+
+fn verify_profile_event_impl(event_json: &str) -> Result<Option<Event>, CoreError> {
+    if event_json.as_bytes().len() > MAX_EVENT_JSON_BYTES {
+        return Ok(None);
+    }
+
+    let event = match Event::from_json(event_json) {
+        Ok(event) => event,
+        Err(_) => return Ok(None),
+    };
+
+    if event.kind != Kind::Metadata {
+        return Ok(None);
+    }
+
+    let secp = Secp256k1::verification_only();
+
+    if event.verify_with_ctx(&secp).is_err() {
+        return Ok(None);
+    }
+
+    if validate_verified_profile_event_limits(&event).is_err() {
         return Ok(None);
     }
 
@@ -848,13 +995,17 @@ fn is_like_reaction_event(event: &StoredEvent) -> bool {
     matches!(event.content.as_str(), "" | "+")
 }
 
+fn is_kusa_reaction_event(event: &StoredEvent) -> bool {
+    event.content == ":kusa:"
+}
+
 #[cfg(test)]
 mod tests {
     use nostr::{EventBuilder, JsonUtil, Keys, Metadata, SecretKey, Tag, Timestamp, Url};
 
     use super::{
         build_unsigned_event, current_unix_timestamp, sanitize_profile_picture_url, verify_event,
-        Timeline, MAX_CONTENT_BYTES, MAX_TAG_VALUE_BYTES, SINCE_BUFFER_SEC,
+        ReactionSummary, Timeline, MAX_CONTENT_BYTES, MAX_TAG_VALUE_BYTES, SINCE_BUFFER_SEC,
     };
 
     #[test]
@@ -1129,13 +1280,17 @@ mod tests {
     }
 
     #[test]
-    fn empty_and_plus_reactions_are_counted_as_likes() {
+    fn reactions_are_split_into_like_kusa_and_more_counts() {
         let mut timeline = Timeline::new();
         let note_keys =
             test_keys("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc");
         let alice = test_keys("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd");
         let bob = test_keys("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
         let carol = test_keys("1212121212121212121212121212121212121212121212121212121212121212");
+        let dave = test_keys("3434343434343434343434343434343434343434343434343434343434343434");
+        let erin = test_keys("5656565656565656565656565656565656565656565656565656565656565656");
+        let frank =
+            test_keys("7878787878787878787878787878787878787878787878787878787878787878");
 
         let note = EventBuilder::text_note("root")
             .custom_created_at(Timestamp::from_secs(100))
@@ -1153,6 +1308,18 @@ mod tests {
             .custom_created_at(Timestamp::from_secs(130))
             .sign_with_keys(&carol)
             .expect("emoji reaction should sign");
+        let kusa_reaction = EventBuilder::reaction(&note, ":kusa:")
+            .custom_created_at(Timestamp::from_secs(140))
+            .sign_with_keys(&dave)
+            .expect("kusa reaction should sign");
+        let second_emoji_reaction = EventBuilder::reaction(&note, "🔥")
+            .custom_created_at(Timestamp::from_secs(150))
+            .sign_with_keys(&erin)
+            .expect("second emoji reaction should sign");
+        let rocket_reaction = EventBuilder::reaction(&note, "🚀")
+            .custom_created_at(Timestamp::from_secs(160))
+            .sign_with_keys(&frank)
+            .expect("rocket reaction should sign");
 
         assert!(timeline
             .verify_and_insert(&note.as_json())
@@ -1166,10 +1333,34 @@ mod tests {
         assert!(timeline
             .verify_and_insert(&emoji_reaction.as_json())
             .expect("emoji reaction should verify"));
+        assert!(timeline
+            .verify_and_insert(&kusa_reaction.as_json())
+            .expect("kusa reaction should verify"));
+        assert!(timeline
+            .verify_and_insert(&second_emoji_reaction.as_json())
+            .expect("second emoji reaction should verify"));
+        assert!(timeline
+            .verify_and_insert(&rocket_reaction.as_json())
+            .expect("rocket reaction should verify"));
 
         let items = timeline.list_timeline(10, None);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].like_count, 2);
+        assert_eq!(items[0].kusa_count, 1);
+        assert_eq!(items[0].more_reaction_count, 3);
+        assert_eq!(
+            items[0].other_reaction_summaries,
+            vec![
+                ReactionSummary {
+                    content: "🔥".to_owned(),
+                    count: 2,
+                },
+                ReactionSummary {
+                    content: "🚀".to_owned(),
+                    count: 1,
+                },
+            ]
+        );
     }
 
     #[test]

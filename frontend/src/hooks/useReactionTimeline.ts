@@ -20,6 +20,7 @@ import {
   timelineItemsEqual,
 } from "../lib/nostr/timelinePresentation";
 import type { TimelineItem, TimelineProfile } from "../lib/wasm/client";
+import { useTemporaryRelayTransport } from "./useTemporaryRelayTransport";
 
 type UseReactionTimelineArgs = {
   autoSignerPromptBlocked: boolean;
@@ -47,7 +48,12 @@ export function useReactionTimeline(args: UseReactionTimelineArgs) {
   const [reactionError, setReactionError] = useState<string | null>(null);
   const [reactionTimeline, setReactionTimeline] = useState<TimelineItem[]>([]);
   const [reactionTargetIds, setReactionTargetIds] = useState<string[]>([]);
-  const [retryRevision, setRetryRevision] = useState(0);
+  const oneShotTransport = useTemporaryRelayTransport({
+    active: args.timelineView === "reaction",
+    relayBootstrapDeferred: args.relayBootstrapDeferred,
+    relayCoordinatorRef: args.relayCoordinatorRef,
+    readyReadRelayCount: args.readyReadRelayCount,
+  });
 
   const accountRelayUrls = useMemo(
     () => loadAccountRelayUrls(args.readRelayUrls),
@@ -81,20 +87,6 @@ export function useReactionTimeline(args: UseReactionTimelineArgs) {
     }
 
     let cancelled = false;
-    let retryTimeoutId: number | null = null;
-
-    if (!args.relayCoordinatorRef.current || args.readyReadRelayCount === 0) {
-      retryTimeoutId = window.setTimeout(() => {
-        setRetryRevision((current) => current + 1);
-      }, 1_000);
-
-      return () => {
-        cancelled = true;
-        if (retryTimeoutId !== null) {
-          window.clearTimeout(retryTimeoutId);
-        }
-      };
-    }
 
     async function loadReactions() {
       if (args.isResolvingSignerPubkey) {
@@ -119,6 +111,12 @@ export function useReactionTimeline(args: UseReactionTimelineArgs) {
         return;
       }
 
+      if (!oneShotTransport.ready) {
+        setReactionLoadState("waiting");
+        setReactionError(null);
+        return;
+      }
+
       setReactionLoadState("loading");
       setReactionError(null);
 
@@ -134,45 +132,11 @@ export function useReactionTimeline(args: UseReactionTimelineArgs) {
           localReactionTargetIdsRef.current = [];
         }
 
-        const relayTransport = {
-          requestTemporaryEvents: async (
-            relayUrl: string,
-            filters: Parameters<RelayCoordinator["requestTemporaryEvents"]>[1],
-            timeoutMs?: number,
-          ) => {
-            const coordinator = args.relayCoordinatorRef.current;
-
-            if (!coordinator) {
-              return [];
-            }
-
-            try {
-              return await coordinator.requestTemporaryEvents(
-                relayUrl,
-                filters,
-                timeoutMs,
-              );
-            } catch (error) {
-              if (
-                error instanceof Error
-                && (
-                  error.message === "relay is not connected"
-                  || error.message === "relay client が初期化されていません"
-                )
-              ) {
-                return [];
-              }
-
-              throw error;
-            }
-          },
-        };
-
         const { targetEvents, targetIds } = await fetchRecentReactionNotesByAuthors(
           accountRelayUrls,
           [pubkey],
           args.timelineLimit,
-          relayTransport,
+          oneShotTransport.relayTransport,
         );
 
         if (cancelled) {
@@ -239,9 +203,6 @@ export function useReactionTimeline(args: UseReactionTimelineArgs) {
 
     return () => {
       cancelled = true;
-      if (retryTimeoutId !== null) {
-        window.clearTimeout(retryTimeoutId);
-      }
     };
   }, [
     args.autoSignerPromptBlocked,
@@ -255,7 +216,8 @@ export function useReactionTimeline(args: UseReactionTimelineArgs) {
     args.timelineView,
     args.viewerPubkey,
     accountRelayUrls,
-    retryRevision,
+    oneShotTransport.ready,
+    oneShotTransport.relayTransport,
   ]);
 
   useEffect(() => {

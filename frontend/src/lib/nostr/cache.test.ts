@@ -40,7 +40,7 @@ afterEach(async () => {
 });
 
 describe("cache", () => {
-  it("profile を先に replay し、同一 pubkey は最新 profile だけ保持する", async () => {
+  it("profile は replay せず、feed event だけ replay する", async () => {
     const pubkey = hexString(10, 64);
     const olderProfile = createEvent({
       pubkey,
@@ -86,14 +86,12 @@ describe("cache", () => {
       },
     });
 
-    expect(result.replayedProfiles).toBe(1);
+    expect(result.replayedProfiles).toBe(0);
     expect(result.replayedFeedEvents).toBe(2);
     expect(replayed.map((event) => event.id)).toEqual([
-      newerProfile.id,
       olderFeed.id,
       newerFeed.id,
     ]);
-    expect(replayed[0]?.content).toContain("newer-profile");
   });
 
   it("relay state を保存し、replay 時に返す", async () => {
@@ -176,7 +174,7 @@ describe("cache", () => {
     });
   });
 
-  it("複数 relay replay では profile を一度だけ読み、relay ごとの state を返す", async () => {
+  it("複数 relay replay では feed event だけを読み、relay ごとの state を返す", async () => {
     const pubkey = hexString(20, 64);
     const profile = createEvent({
       pubkey,
@@ -229,9 +227,9 @@ describe("cache", () => {
       },
     });
 
-    expect(result.replayedProfiles).toBe(1);
+    expect(result.replayedProfiles).toBe(0);
     expect(result.replayedFeedEvents).toBe(2);
-    expect(replayedKinds.filter((kind) => kind === 0)).toHaveLength(1);
+    expect(replayedKinds.filter((kind) => kind === 0)).toHaveLength(0);
     expect(result.relayRecords[RELAY_URL]).toMatchObject({
       sinceHint: 1_111,
       lastConnected: 2_222,
@@ -403,6 +401,36 @@ describe("cache", () => {
         pubkey: firstPubkey,
         createdAt: 200,
         eventId: firstProfile.id,
+      }),
+    ]);
+  });
+
+  it("summary-only profile cache を保存して読み込める", async () => {
+    const pubkey = hexString(40, 64);
+
+    await cache.persistProfileSummary({
+      pubkey,
+      eventId: hexString(41, 64),
+      createdAt: 300,
+      profile: {
+        name: "rain_256",
+        displayName: "あめ",
+        picture: null,
+      },
+    });
+
+    const records = await cache.loadCachedProfilesByPubkeys([pubkey]);
+
+    expect(records).toEqual([
+      expect.objectContaining({
+        pubkey,
+        eventId: hexString(41, 64),
+        createdAt: 300,
+        summary: {
+          name: "rain_256",
+          displayName: "あめ",
+          picture: null,
+        },
       }),
     ]);
   });

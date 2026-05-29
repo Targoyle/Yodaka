@@ -1,6 +1,6 @@
 export type TimelineView = "relay" | "follow" | "notify" | "reaction" | "account";
 
-export type AuxiliaryLoadState = "idle" | "loading" | "ready" | "error";
+export type AuxiliaryLoadState = "idle" | "waiting" | "loading" | "ready" | "error";
 
 export type RelayDiagnosticState = {
   sinceHint: number | null;

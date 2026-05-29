@@ -8,6 +8,7 @@ import {
 import type { RelayDiagnosticState } from "../app/types";
 import {
   loadCachedProfilesByPubkeys,
+  persistProfileSummary,
   loadRelayStates,
   persistAcceptedEvent,
   replayCachedRelays,
@@ -15,6 +16,7 @@ import {
 } from "../lib/nostr/cache";
 import { extractProfileLookupPubkeysFromEvent } from "../lib/nostr/profileLookup";
 import { normalizeHexPubkey } from "../lib/nostr/pubkey";
+import { buildRoleAwareRelayStatus } from "../lib/nostr/relayStatusSummary";
 import type { NostrEvent, RelayFilter } from "../lib/nostr/relay";
 import {
   RelayCoordinator,
@@ -41,6 +43,7 @@ import {
   sinceHint,
   verifyAndInsert,
   verifyAndInsertRawJson,
+  verifyProfileSummaryEventRawJson,
   type TimelineItem,
   type TimelineProfile,
 } from "../lib/wasm/client";
@@ -400,9 +403,13 @@ export function useRelayBootstrap(args: UseRelayBootstrapArgs) {
       let changed = false;
 
       for (const record of records) {
+        const profile =
+          record.summary
+          ?? parseProfileSummary(record.rawContent ?? "");
+
         changed = mergeProfileSummary({
           pubkey: record.pubkey,
-          profile: parseProfileSummary(record.rawContent),
+          profile,
           version: {
             createdAt: record.createdAt,
             eventId: record.eventId,
@@ -699,20 +706,26 @@ export function useRelayBootstrap(args: UseRelayBootstrapArgs) {
     }
 
     function applyRelayStatus(status: RelayCoordinatorStatus) {
-      if (status.readyRelayCount > readyRelayCount) {
+      const roleAwareStatus = buildRoleAwareRelayStatus({
+        readRelayUrls: readRelayUrlsRef.current,
+        status,
+        writeRelayUrls: writeRelayUrlsRef.current,
+      });
+
+      if (roleAwareStatus.readyRelayCount > readyRelayCount) {
         nextProfileRequestGeneration();
       }
 
-      readyRelayCount = status.readyRelayCount;
+      readyRelayCount = roleAwareStatus.readyRelayCount;
       scheduleProfileBatchFlush();
 
       if (cancelled) {
         return;
       }
 
-      setRelayStatus(status);
+      setRelayStatus(roleAwareStatus);
 
-      switch (status.phase) {
+      switch (roleAwareStatus.phase) {
         case "connecting":
           clearProfileBatchTimer();
           requestedProfilePubkeys.clear();
@@ -726,15 +739,15 @@ export function useRelayBootstrap(args: UseRelayBootstrapArgs) {
           return;
 
         case "partial":
-          setSyncStatus("some relays live");
+          setSyncStatus("some read relays live");
           return;
 
         case "live":
-          setSyncStatus("all relays live");
+          setSyncStatus("all read relays live");
           return;
 
         case "degraded":
-          setSyncStatus("some relays reconnecting");
+          setSyncStatus("some read relays reconnecting");
           return;
 
         case "offline":
@@ -792,7 +805,11 @@ export function useRelayBootstrap(args: UseRelayBootstrapArgs) {
         }
 
         logCacheReplay(replay.replayedFeedEvents, replay.replayedProfiles);
-        await refreshSnapshot();
+        const replayedItems = await refreshSnapshot();
+
+        if (replayedItems) {
+          await hydrateCachedProfiles(collectProfileLookupPubkeys(replayedItems));
+        }
 
         if (cancelled) {
           return;
@@ -888,6 +905,50 @@ export function useRelayBootstrap(args: UseRelayBootstrapArgs) {
             }
           },
           onEvent: async ({ relayUrl, role, event }) => {
+            if (role === "profiles" && event.kind === 0) {
+              let verifiedProfile = null;
+
+              try {
+                verifiedProfile = await verifyProfileSummaryEventRawJson(
+                  JSON.stringify(event),
+                );
+              } catch (error) {
+                if (!cancelled) {
+                  const message =
+                    error instanceof Error ? error.message : String(error);
+                  setErrorMessage(`profile 検証に失敗しました: ${message}`);
+                }
+                return;
+              }
+
+              if (cancelled || !verifiedProfile) {
+                return;
+              }
+
+              if (
+                mergeProfileSummary({
+                  pubkey: verifiedProfile.pubkey,
+                  profile: verifiedProfile.profile,
+                  version: {
+                    createdAt: verifiedProfile.createdAt,
+                    eventId: verifiedProfile.eventId,
+                  },
+                })
+              ) {
+                setProfileSummaryVersion((currentVersion) => currentVersion + 1);
+              }
+
+              void enqueuePersistence(() =>
+                persistProfileSummary({
+                  pubkey: verifiedProfile.pubkey,
+                  eventId: verifiedProfile.eventId,
+                  createdAt: verifiedProfile.createdAt,
+                  profile: verifiedProfile.profile,
+                }),
+              );
+              return;
+            }
+
             let accepted = false;
 
             try {

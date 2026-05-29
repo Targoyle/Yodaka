@@ -21,6 +21,7 @@ import {
   timelineItemsEqual,
 } from "../lib/nostr/timelinePresentation";
 import type { TimelineItem, TimelineProfile } from "../lib/wasm/client";
+import { useTemporaryRelayTransport } from "./useTemporaryRelayTransport";
 
 type UseFollowTimelineArgs = {
   autoSignerPromptBlocked: boolean;
@@ -49,7 +50,12 @@ export function useFollowTimeline(args: UseFollowTimelineArgs) {
   const [followSourceKey, setFollowSourceKey] = useState<string | null>(null);
   const [followError, setFollowError] = useState<string | null>(null);
   const [followTimeline, setFollowTimeline] = useState<TimelineItem[]>([]);
-  const [retryRevision, setRetryRevision] = useState(0);
+  const oneShotTransport = useTemporaryRelayTransport({
+    active: args.timelineView === "follow",
+    relayBootstrapDeferred: args.relayBootstrapDeferred,
+    relayCoordinatorRef: args.relayCoordinatorRef,
+    readyReadRelayCount: args.readyReadRelayCount,
+  });
 
   const ensureViewerPubkeyRef = useRef(args.ensureViewerPubkey);
   const ingestOverlayEventsRef = useRef(args.ingestOverlayEvents);
@@ -77,20 +83,6 @@ export function useFollowTimeline(args: UseFollowTimelineArgs) {
     }
 
     let cancelled = false;
-    let retryTimeoutId: number | null = null;
-
-    if (!args.relayCoordinatorRef.current || args.readyReadRelayCount === 0) {
-      retryTimeoutId = window.setTimeout(() => {
-        setRetryRevision((current) => current + 1);
-      }, 1_000);
-
-      return () => {
-        cancelled = true;
-        if (retryTimeoutId !== null) {
-          window.clearTimeout(retryTimeoutId);
-        }
-      };
-    }
 
     async function loadFollows() {
       if (args.isResolvingSignerPubkey) {
@@ -112,6 +104,12 @@ export function useFollowTimeline(args: UseFollowTimelineArgs) {
       if (args.readRelayUrls.length === 0) {
         setFollowLoadState("error");
         setFollowError("read relay が設定されていません");
+        return;
+      }
+
+      if (!oneShotTransport.ready) {
+        setFollowLoadState("waiting");
+        setFollowError(null);
         return;
       }
 
@@ -139,74 +137,14 @@ export function useFollowTimeline(args: UseFollowTimelineArgs) {
           setFollowTimeline([]);
         }
 
-        const relayTransport = {
-          requestTemporaryEvents: async (
-            relayUrl: string,
-            filters: Parameters<RelayCoordinator["requestTemporaryEvents"]>[1],
-            timeoutMs?: number,
-          ) => {
-            const coordinator = args.relayCoordinatorRef.current;
-
-            if (!coordinator) {
-              return [];
-            }
-
-            try {
-              return await coordinator.requestTemporaryEvents(
-                relayUrl,
-                filters,
-                timeoutMs,
-              );
-            } catch (error) {
-              if (
-                error instanceof Error
-                && (
-                  error.message === "relay is not connected"
-                  || error.message === "relay client が初期化されていません"
-                )
-              ) {
-                return [];
-              }
-
-              throw error;
-            }
-          },
-          requestTemporaryLatestEvent: async (
-            relayUrl: string,
-            filters: Parameters<RelayCoordinator["requestTemporaryLatestEvent"]>[1],
-            timeoutMs?: number,
-          ) => {
-            const coordinator = args.relayCoordinatorRef.current;
-
-            if (!coordinator) {
-              return null;
-            }
-
-            try {
-              return await coordinator.requestTemporaryLatestEvent(
-                relayUrl,
-                filters,
-                timeoutMs,
-              );
-            } catch (error) {
-              if (
-                error instanceof Error
-                && (
-                  error.message === "relay is not connected"
-                  || error.message === "relay client が初期化されていません"
-                )
-              ) {
-                return null;
-              }
-
-              throw error;
-            }
-          },
-        };
         const targets =
           followSourceKey === sourceKey
             ? followTargets
-            : await fetchFollowTargets(accountRelayUrls, pubkey, relayTransport);
+            : await fetchFollowTargets(
+              accountRelayUrls,
+              pubkey,
+              oneShotTransport.relayTransport,
+            );
 
         if (cancelled) {
           return;
@@ -221,7 +159,7 @@ export function useFollowTimeline(args: UseFollowTimelineArgs) {
           accountRelayUrls,
           targets,
           args.timelineLimit,
-          relayTransport,
+          oneShotTransport.relayTransport,
         );
 
         if (cancelled) {
@@ -269,9 +207,6 @@ export function useFollowTimeline(args: UseFollowTimelineArgs) {
 
     return () => {
       cancelled = true;
-      if (retryTimeoutId !== null) {
-        window.clearTimeout(retryTimeoutId);
-      }
     };
   }, [
     args.autoSignerPromptBlocked,
@@ -289,7 +224,8 @@ export function useFollowTimeline(args: UseFollowTimelineArgs) {
     args.viewerPubkey,
     followSourceKey,
     followTargets,
-    retryRevision,
+    oneShotTransport.ready,
+    oneShotTransport.relayTransport,
   ]);
 
   useEffect(() => {

@@ -1,5 +1,10 @@
 import { useState, type FormEvent, type KeyboardEvent, type MutableRefObject } from "react";
 import { persistAcceptedEvent } from "../lib/nostr/cache";
+import {
+  buildReactionContent,
+  buildReactionCustomEmojiTags,
+  type ReactionIntent,
+} from "../lib/nostr/reaction";
 import type { NostrEvent } from "../lib/nostr/relay";
 import {
   RelayPublishError,
@@ -192,7 +197,7 @@ export function usePublish(args: UsePublishArgs) {
     void publishDraft();
   }
 
-  async function handleReaction(item: TimelineItem) {
+  async function handleReaction(item: TimelineItem, reactionIntent: ReactionIntent) {
     if (isPublishing || pendingReactionEventIds.includes(item.id)) {
       return;
     }
@@ -233,6 +238,8 @@ export function usePublish(args: UsePublishArgs) {
         ? await args.ensureSignerPubkey()
         : await args.requestSignerPubkeyFromUserGesture();
       const reactionRelayHint = args.selectReactionRelayHint();
+      const reactionContent = buildReactionContent(reactionIntent);
+      const customEmojiTags = buildReactionCustomEmojiTags(reactionIntent);
 
       if (!pubkey) {
         throw new Error("署名ログインから公開鍵を取得できませんでした");
@@ -240,7 +247,7 @@ export function usePublish(args: UsePublishArgs) {
 
       const unsigned = await buildUnsignedEvent({
         pubkey,
-        content: "",
+        content: reactionContent,
         kind: 7,
         tags: [
           reactionRelayHint
@@ -250,6 +257,7 @@ export function usePublish(args: UsePublishArgs) {
             ? ["p", item.pubkey, reactionRelayHint]
             : ["p", item.pubkey],
           ["k", `${item.kind}`],
+          ...customEmojiTags,
         ],
       });
       const signerEvent = toSignerEvent(unsigned);

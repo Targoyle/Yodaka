@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { TimelineView } from "../app/types";
+import type { ReactionIntent } from "../lib/nostr/reaction";
 import type { TimelineItem } from "../lib/wasm/client";
 import { TimelineCard } from "./TimelineCard";
 
@@ -16,7 +17,7 @@ type TimelinePanelProps = {
   reactionTabEnabled: boolean;
   relayButtonTitle: string;
   timelineView: TimelineView;
-  onReact: (item: TimelineItem) => void | Promise<void>;
+  onReact: (item: TimelineItem, reactionIntent: ReactionIntent) => void | Promise<void>;
   onTimelineViewChange: (view: TimelineView) => void | Promise<void>;
   visibleTimeline: TimelineItem[];
 };

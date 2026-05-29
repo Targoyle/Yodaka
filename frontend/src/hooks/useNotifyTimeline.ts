@@ -19,6 +19,7 @@ import {
   timelineItemsEqual,
 } from "../lib/nostr/timelinePresentation";
 import type { TimelineItem, TimelineProfile } from "../lib/wasm/client";
+import { useTemporaryRelayTransport } from "./useTemporaryRelayTransport";
 
 const NOTIFY_REFRESH_INTERVAL_MS = 15_000;
 
@@ -50,6 +51,12 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
   const [notifyTimeline, setNotifyTimeline] = useState<TimelineItem[]>([]);
   const [notifyEventIds, setNotifyEventIds] = useState<string[]>([]);
   const [refreshRevision, setRefreshRevision] = useState(0);
+  const oneShotTransport = useTemporaryRelayTransport({
+    active: args.timelineView === "notify",
+    relayBootstrapDeferred: args.relayBootstrapDeferred,
+    relayCoordinatorRef: args.relayCoordinatorRef,
+    readyReadRelayCount: args.readyReadRelayCount,
+  });
 
   const accountRelayUrls = useMemo(
     () => loadAccountRelayUrls(args.readRelayUrls),
@@ -101,20 +108,6 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
     }
 
     let cancelled = false;
-    let retryTimeoutId: number | null = null;
-
-    if (!args.relayCoordinatorRef.current || args.readyReadRelayCount === 0) {
-      retryTimeoutId = window.setTimeout(() => {
-        setRefreshRevision((current) => current + 1);
-      }, 1_000);
-
-      return () => {
-        cancelled = true;
-        if (retryTimeoutId !== null) {
-          window.clearTimeout(retryTimeoutId);
-        }
-      };
-    }
 
     async function loadNotifications() {
       if (args.isResolvingSignerPubkey) {
@@ -139,6 +132,12 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
         return;
       }
 
+      if (!oneShotTransport.ready) {
+        setNotifyLoadState("waiting");
+        setNotifyError(null);
+        return;
+      }
+
       setNotifyLoadState("loading");
       setNotifyError(null);
 
@@ -148,39 +147,6 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
           return;
         }
 
-        const relayTransport = {
-          requestTemporaryEvents: async (
-            relayUrl: string,
-            filters: Parameters<RelayCoordinator["requestTemporaryEvents"]>[1],
-            timeoutMs?: number,
-          ) => {
-            const coordinator = args.relayCoordinatorRef.current;
-
-            if (!coordinator) {
-              return [];
-            }
-
-            try {
-              return await coordinator.requestTemporaryEvents(
-                relayUrl,
-                filters,
-                timeoutMs,
-              );
-            } catch (error) {
-              if (
-                error instanceof Error
-                && (
-                  error.message === "relay is not connected"
-                  || error.message === "relay client が初期化されていません"
-                )
-              ) {
-                return [];
-              }
-
-              throw error;
-            }
-          },
-        };
         const knownTargetEventIds = collectKnownNotifyTargetEventIds(
           [...args.accountTimeline, ...args.timelineRef.current],
           knownNotifyTargetEventIdsRef.current,
@@ -193,7 +159,7 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
           accountRelayUrls,
           pubkey,
           args.timelineLimit,
-          relayTransport,
+          oneShotTransport.relayTransport,
           knownTargetEventIds,
         );
 
@@ -254,9 +220,6 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
 
     return () => {
       cancelled = true;
-      if (retryTimeoutId !== null) {
-        window.clearTimeout(retryTimeoutId);
-      }
     };
   }, [
     args.autoSignerPromptBlocked,
@@ -272,6 +235,8 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
     args.viewerPubkey,
     refreshRevision,
     accountRelayUrls,
+    oneShotTransport.ready,
+    oneShotTransport.relayTransport,
   ]);
 
   useEffect(() => {
@@ -459,6 +424,7 @@ function hydrateNotifyTimelineItem(args: {
         notifyActorProfile,
         notifyReactionContent,
         notifyTargetEventId,
+        notifyTargetResolved: true,
       };
     }
 
@@ -466,6 +432,7 @@ function hydrateNotifyTimelineItem(args: {
       args.item.notifyActorPubkey === notifyActorPubkey
       && args.item.notifyReactionContent === notifyReactionContent
       && args.item.notifyTargetEventId === notifyTargetEventId
+      && (args.item.notifyTargetResolved ?? false) === false
       && args.item.notifyActorProfile === notifyActorProfile
     ) {
       return args.item;
@@ -477,6 +444,7 @@ function hydrateNotifyTimelineItem(args: {
       notifyActorProfile,
       notifyReactionContent,
       notifyTargetEventId,
+      notifyTargetResolved: false,
     };
   }
 
@@ -499,18 +467,12 @@ function hydrateNotifyTimelineItem(args: {
     notifyActorProfile,
     notifyReactionContent,
     notifyTargetEventId,
+    notifyTargetResolved: true,
   };
 }
 
 function isResolvedNotifyTargetBody(item: TimelineItem) {
-  if (!item.notifyTargetEventId) {
-    return false;
-  }
-
-  return (
-    item.pubkey !== (item.notifyActorPubkey ?? item.pubkey)
-    || item.content !== (item.notifyReactionContent ?? item.content)
-  );
+  return item.notifyTargetResolved ?? false;
 }
 
 function normalizeNotifyPubkey(pubkey: string | undefined) {

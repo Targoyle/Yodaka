@@ -1,7 +1,11 @@
 import type { AuxiliaryLoadState, TimelineView } from "../../app/types";
 import { normalizeHexPubkey } from "./pubkey";
 import type { NostrEvent } from "./relay";
-import type { TimelineItem, TimelineProfile } from "../wasm/client";
+import type {
+  ReactionSummary,
+  TimelineItem,
+  TimelineProfile,
+} from "../wasm/client";
 import { profilesEqual } from "./profilePresentation";
 
 export function buildVisibleTimeline(args: {
@@ -131,6 +135,9 @@ export function buildAuxiliaryTimeline(args: {
       replyTargetProfile,
       replyContextPubkeys,
       likeCount: 0,
+      kusaCount: 0,
+      moreReactionCount: 0,
+      otherReactionSummaries: [],
       profile: args.profileSummaries.get(normalizedPubkey) ?? null,
     });
   }
@@ -189,10 +196,12 @@ export function mergeAuxiliaryTimeline(args: {
       currentItem?.notifyReactionContent ?? item.notifyReactionContent ?? null;
     const notifyTargetEventId =
       currentItem?.notifyTargetEventId ?? item.notifyTargetEventId ?? null;
+    const notifyTargetResolved =
+      currentItem?.notifyTargetResolved ?? item.notifyTargetResolved ?? false;
     const preserveResolvedNotifyBody =
       item.kind === 7
-      && isResolvedNotifyTargetBody(currentItem)
-      && !item.notifyTargetEventId;
+      && notifyTargetResolved
+      && !item.notifyTargetResolved;
     const mergedItem: TimelineItem = {
       ...(preserveResolvedNotifyBody && currentItem ? currentItem : item),
       isReply,
@@ -204,6 +213,7 @@ export function mergeAuxiliaryTimeline(args: {
       notifyActorProfile,
       notifyReactionContent,
       notifyTargetEventId,
+      notifyTargetResolved,
     };
 
     items.set(
@@ -219,11 +229,18 @@ export function mergeAuxiliaryTimeline(args: {
       && profilesEqual(currentItem.replyTargetProfile, mergedItem.replyTargetProfile)
       && replyContextPubkeysEqual(currentItem.replyContextPubkeys, mergedItem.replyContextPubkeys)
       && currentItem.likeCount === mergedItem.likeCount
+      && (currentItem.kusaCount ?? 0) === (mergedItem.kusaCount ?? 0)
+      && (currentItem.moreReactionCount ?? 0) === (mergedItem.moreReactionCount ?? 0)
+      && reactionSummariesEqual(
+        currentItem.otherReactionSummaries ?? [],
+        mergedItem.otherReactionSummaries ?? [],
+      )
       && profilesEqual(currentItem.profile, mergedItem.profile)
       && currentItem.notifyActorPubkey === mergedItem.notifyActorPubkey
       && profilesEqual(currentItem.notifyActorProfile, mergedItem.notifyActorProfile)
       && currentItem.notifyReactionContent === mergedItem.notifyReactionContent
       && currentItem.notifyTargetEventId === mergedItem.notifyTargetEventId
+      && (currentItem.notifyTargetResolved ?? false) === (mergedItem.notifyTargetResolved ?? false)
         ? currentItem
         : mergedItem,
     );
@@ -293,11 +310,18 @@ export function timelineItemsEqual(left: TimelineItem[], right: TimelineItem[]) 
         rightItem.replyContextPubkeys,
       )
       || leftItem.likeCount !== rightItem.likeCount
+      || (leftItem.kusaCount ?? 0) !== (rightItem.kusaCount ?? 0)
+      || (leftItem.moreReactionCount ?? 0) !== (rightItem.moreReactionCount ?? 0)
+      || !reactionSummariesEqual(
+        leftItem.otherReactionSummaries ?? [],
+        rightItem.otherReactionSummaries ?? [],
+      )
       || !profilesEqual(leftItem.profile, rightItem.profile)
       || leftItem.notifyActorPubkey !== rightItem.notifyActorPubkey
       || !profilesEqual(leftItem.notifyActorProfile, rightItem.notifyActorProfile)
       || leftItem.notifyReactionContent !== rightItem.notifyReactionContent
       || leftItem.notifyTargetEventId !== rightItem.notifyTargetEventId
+      || (leftItem.notifyTargetResolved ?? false) !== (rightItem.notifyTargetResolved ?? false)
     ) {
       return false;
     }
@@ -437,15 +461,34 @@ function replyContextPubkeysEqual(left: string[], right: string[]) {
   return true;
 }
 
-function isResolvedNotifyTargetBody(item: TimelineItem | undefined) {
-  if (!item?.notifyTargetEventId) {
+function reactionSummariesEqual(left: ReactionSummary[], right: ReactionSummary[]) {
+  if (left === right) {
+    return true;
+  }
+
+  if (left.length !== right.length) {
     return false;
   }
 
-  return (
-    item.pubkey !== (item.notifyActorPubkey ?? item.pubkey)
-    || item.content !== (item.notifyReactionContent ?? item.content)
-  );
+  for (let index = 0; index < left.length; index += 1) {
+    const leftItem = left[index];
+    const rightItem = right[index];
+
+    if (
+      !leftItem
+      || !rightItem
+      || leftItem.content !== rightItem.content
+      || leftItem.count !== rightItem.count
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function isResolvedNotifyTargetBody(item: TimelineItem | undefined) {
+  return item?.notifyTargetResolved ?? false;
 }
 
 export function buildTimelineEmptyMessage(
@@ -472,6 +515,9 @@ export function buildTimelineEmptyMessage(
     }
 
     switch (notifyLoadState) {
+      case "waiting":
+        return "read relay 接続待ち...";
+
       case "loading":
         return "通知読み込み中...";
 
@@ -489,6 +535,9 @@ export function buildTimelineEmptyMessage(
     }
 
     switch (reactionLoadState) {
+      case "waiting":
+        return "read relay 接続待ち...";
+
       case "loading":
         return "リアクション読み込み中...";
 
@@ -502,6 +551,9 @@ export function buildTimelineEmptyMessage(
 
   if (timelineView === "account") {
     switch (accountLoadState) {
+      case "waiting":
+        return "read relay 接続待ち...";
+
       case "loading":
         return "タイムライン読み込み中...";
 
@@ -523,6 +575,10 @@ export function buildTimelineEmptyMessage(
 
   if (followLoadState === "loading" || accountLoadState === "loading") {
     return "タイムライン読み込み中...";
+  }
+
+  if (followLoadState === "waiting" || accountLoadState === "waiting") {
+    return "read relay 接続待ち...";
   }
 
   if (followLoadState === "error" && accountLoadState === "error") {

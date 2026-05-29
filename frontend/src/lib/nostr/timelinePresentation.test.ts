@@ -173,6 +173,7 @@ describe("buildAuxiliaryTimeline", () => {
       },
       notifyReactionContent: "😀",
       notifyTargetEventId: "target-id",
+      notifyTargetResolved: true,
     };
     const snapshotItem: TimelineItem = {
       id: "reaction-id",
@@ -200,6 +201,7 @@ describe("buildAuxiliaryTimeline", () => {
     expect(mergedItem?.content).toBe(currentItem.content);
     expect(mergedItem?.notifyActorPubkey).toBe(currentItem.notifyActorPubkey);
     expect(mergedItem?.notifyTargetEventId).toBe(currentItem.notifyTargetEventId);
+    expect(mergedItem?.notifyTargetResolved).toBe(true);
   });
 
   it("merges follow and account timelines without duplicating self posts", () => {
