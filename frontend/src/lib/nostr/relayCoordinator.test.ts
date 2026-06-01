@@ -324,6 +324,132 @@ describe("RelayCoordinator", () => {
     });
   });
 
+  it("notify filter を既存接続へ張り、notify event は専用 listener へ流す", async () => {
+    const onEvent = vi.fn();
+    const notifyEvents: NostrEvent[] = [];
+    const coordinator = createRelayCoordinator({
+      onEvent,
+    });
+
+    coordinator.setNotifyListener(async (context) => {
+      notifyEvents.push(context.event);
+    });
+    coordinator.setNotifyFilters((relayUrl) =>
+      relayUrl === "wss://nos.lol"
+        ? [{ kinds: [1, 7], "#p": ["viewer-pubkey"], since: 123 }]
+        : null,
+    );
+    coordinator.connect();
+
+    const firstSocket = MockWebSocket.instances[0];
+    const secondSocket = MockWebSocket.instances[1];
+    firstSocket.emitOpen();
+    secondSocket.emitOpen();
+    await flushAsync();
+
+    const firstNotifyRequest = sentFrames(firstSocket).find(
+      (frame) =>
+        frame[0] === "REQ"
+        && isRecord(frame[2])
+        && Array.isArray(frame[2]["#p"]),
+    );
+    const secondNotifyRequest = sentFrames(secondSocket).find(
+      (frame) =>
+        frame[0] === "REQ"
+        && isRecord(frame[2])
+        && Array.isArray(frame[2]["#p"]),
+    );
+
+    expect(firstNotifyRequest).toBeUndefined();
+    expect(secondNotifyRequest).toBeDefined();
+
+    const notifySubscriptionId = secondNotifyRequest?.[1] as string;
+    secondSocket.emitMessage(
+      JSON.stringify([
+        "EVENT",
+        notifySubscriptionId,
+        createEvent({
+          id: "notify-event-id",
+          kind: 7,
+          tags: [["p", "viewer-pubkey"]],
+        }),
+      ]),
+    );
+    await flushAsync();
+
+    expect(notifyEvents).toEqual([
+      expect.objectContaining({
+        id: "notify-event-id",
+        kind: 7,
+      }),
+    ]);
+    expect(onEvent).not.toHaveBeenCalled();
+  });
+
+  it("reaction filter を既存接続へ張り、reaction event は専用 listener へ流す", async () => {
+    const onEvent = vi.fn();
+    const reactionEvents: NostrEvent[] = [];
+    const coordinator = createRelayCoordinator({
+      onEvent,
+    });
+
+    coordinator.setReactionListener(async (context) => {
+      reactionEvents.push(context.event);
+    });
+    coordinator.setReactionFilters((relayUrl) =>
+      relayUrl === "wss://nos.lol"
+        ? [{ kinds: [7], authors: ["viewer-pubkey"], since: 123 }]
+        : null,
+    );
+    coordinator.connect();
+
+    const firstSocket = MockWebSocket.instances[0];
+    const secondSocket = MockWebSocket.instances[1];
+    firstSocket.emitOpen();
+    secondSocket.emitOpen();
+    await flushAsync();
+
+    const firstReactionRequest = sentFrames(firstSocket).find(
+      (frame) =>
+        frame[0] === "REQ"
+        && isRecord(frame[2])
+        && Array.isArray(frame[2].authors),
+    );
+    const secondReactionRequest = sentFrames(secondSocket).find(
+      (frame) =>
+        frame[0] === "REQ"
+        && isRecord(frame[2])
+        && Array.isArray(frame[2].authors)
+        && frame[2].authors[0] === "viewer-pubkey",
+    );
+
+    expect(firstReactionRequest).toBeUndefined();
+    expect(secondReactionRequest).toBeDefined();
+
+    const reactionSubscriptionId = secondReactionRequest?.[1] as string;
+    secondSocket.emitMessage(
+      JSON.stringify([
+        "EVENT",
+        reactionSubscriptionId,
+        createEvent({
+          id: "reaction-event-id",
+          pubkey: "viewer-pubkey",
+          kind: 7,
+          tags: [["e", "target-id"]],
+        }),
+      ]),
+    );
+    await flushAsync();
+
+    expect(reactionEvents).toEqual([
+      expect.objectContaining({
+        id: "reaction-event-id",
+        kind: 7,
+      }),
+    ]);
+    expect(onEvent).not.toHaveBeenCalled();
+  });
+
   it("publish を relay へ fan-out し、1 件以上 accepted なら成功扱いにする", async () => {
     const coordinator = createRelayCoordinator();
 

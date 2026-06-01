@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ChangeEvent,
@@ -16,6 +17,7 @@ import type { NostrEvent } from "../lib/nostr/relay";
 import {
   buildTimelineEmptyMessage,
   buildVisibleTimeline,
+  timelineItemsEqual,
 } from "../lib/nostr/timelinePresentation";
 import { moveRelaySettings } from "../lib/nostr/relaySettings";
 import {
@@ -72,6 +74,19 @@ import {
 import type { TimelineItem } from "../lib/wasm/client";
 
 const TIMELINE_LIMIT = 50;
+
+type ReplyPreviewCacheEntry =
+  | {
+      status: "hit";
+      item: TimelineItem;
+    }
+  | {
+      status: "pending";
+    }
+  | {
+      status: "missing";
+      retryAt: number;
+    };
 
 export function App() {
   const [relaySettings, setRelaySettings] = useState<RelaySetting[]>(() =>
@@ -139,8 +154,10 @@ export function App() {
     title: "",
     jsonText: "",
   });
-  const [replyPreviewItems, setReplyPreviewItems] = useState<TimelineItem[]>([]);
-  const [replyPreviewRetryRevision, setReplyPreviewRetryRevision] = useState(0);
+  const [replyPreviewCache, setReplyPreviewCache] = useState<
+    Record<string, ReplyPreviewCacheEntry>
+  >({});
+  const [replyPreviewRetryClock, setReplyPreviewRetryClock] = useState(0);
   const [timelineView, setTimelineView] = useState<TimelineView>(() =>
     initialManualPubkey ? "follow" : "relay",
   );
@@ -213,8 +230,13 @@ export function App() {
   const debugRelayTransport = createTemporaryRelayTransport(
     () => relayCoordinatorRef.current,
   );
-  const inflightReplyPreviewIdsRef = useRef<Set<string>>(new Set());
-  const resolvedReplyPreviewIdsRef = useRef<Set<string>>(new Set());
+  const replyPreviewItems = useMemo(
+    () =>
+      Object.values(replyPreviewCache).flatMap((entry) => (
+        entry.status === "hit" ? [entry.item] : []
+      )),
+    [replyPreviewCache],
+  );
 
   const {
     clearFollowError,
@@ -578,6 +600,18 @@ export function App() {
     }
   }
 
+  async function handleCopyEventJson() {
+    if (
+      typeof navigator === "undefined"
+      || !navigator.clipboard?.writeText
+      || !eventJsonDialogState.jsonText
+    ) {
+      return;
+    }
+
+    await navigator.clipboard.writeText(eventJsonDialogState.jsonText);
+  }
+
   function handleRelayToggle(url: string) {
     setRelaySettings((current) =>
       current.map((setting) =>
@@ -787,25 +821,55 @@ export function App() {
 
   useEffect(() => {
     const referenceById = new Map(timelineReferenceItems.map((item) => [item.id, item] as const));
-    const persistedIds = new Set(replyPreviewItems.map((item) => item.id));
-    const resolvedPreviewItems = visibleTimeline
-      .map((item) => item.replyTargetEventId ? referenceById.get(item.replyTargetEventId) ?? null : null)
-      .filter((item): item is TimelineItem => (
-        item !== null
-        && !persistedIds.has(item.id)
-      ));
+    const resolvedPreviewEntries = visibleTimeline
+      .map((item) => {
+        const targetEventId = item.replyTargetEventId;
 
-    if (resolvedPreviewItems.length === 0) {
+        if (!targetEventId) {
+          return null;
+        }
+
+        const targetItem = referenceById.get(targetEventId) ?? null;
+
+        if (!targetItem || targetItem.id === item.id) {
+          return null;
+        }
+
+        return {
+          eventId: targetEventId,
+          item: targetItem,
+        };
+      })
+      .filter((entry): entry is { eventId: string; item: TimelineItem } => entry !== null);
+
+    if (resolvedPreviewEntries.length === 0) {
       return;
     }
 
-    setReplyPreviewItems((current) => {
-      const knownIds = new Set(current.map((item) => item.id));
-      const uniqueItems = resolvedPreviewItems.filter((item) => !knownIds.has(item.id));
+    setReplyPreviewCache((current) => {
+      let changed = false;
+      const next = { ...current };
 
-      return uniqueItems.length === 0 ? current : [...current, ...uniqueItems];
+      for (const entry of resolvedPreviewEntries) {
+        const existingEntry = current[entry.eventId];
+
+        if (
+          existingEntry?.status === "hit"
+          && timelineItemsEqual([existingEntry.item], [entry.item])
+        ) {
+          continue;
+        }
+
+        next[entry.eventId] = {
+          status: "hit",
+          item: entry.item,
+        };
+        changed = true;
+      }
+
+      return changed ? next : current;
     });
-  }, [replyPreviewItems, timelineReferenceItems, visibleTimeline]);
+  }, [timelineReferenceItems, visibleTimeline]);
 
   useEffect(() => {
     if (readyReadRelayCount <= 0 || readRelayUrls.length === 0) {
@@ -813,6 +877,7 @@ export function App() {
     }
 
     const referenceItemIds = new Set(timelineReferenceItems.map((item) => item.id));
+    const now = Date.now();
     const missingReplyTargetIds = [...new Set(
       visibleTimeline
         .map((item) => item.replyTargetEventId)
@@ -820,8 +885,13 @@ export function App() {
           typeof eventId === "string"
           && eventId.length > 0
           && !referenceItemIds.has(eventId)
-          && !resolvedReplyPreviewIdsRef.current.has(eventId)
-          && !inflightReplyPreviewIdsRef.current.has(eventId)
+          && (
+            !replyPreviewCache[eventId]
+            || (
+              replyPreviewCache[eventId]?.status === "missing"
+              && replyPreviewCache[eventId].retryAt <= now
+            )
+          )
         )),
     )];
 
@@ -829,12 +899,23 @@ export function App() {
       return;
     }
 
-    for (const eventId of missingReplyTargetIds) {
-      inflightReplyPreviewIdsRef.current.add(eventId);
-    }
+    setReplyPreviewCache((current) => {
+      let changed = false;
+      const next = { ...current };
+
+      for (const eventId of missingReplyTargetIds) {
+        if (current[eventId]?.status === "pending") {
+          continue;
+        }
+
+        next[eventId] = { status: "pending" };
+        changed = true;
+      }
+
+      return changed ? next : current;
+    });
 
     let cancelled = false;
-    let retryTimerId: number | null = null;
 
     void (async () => {
       const settled = await Promise.all(
@@ -842,19 +923,26 @@ export function App() {
           const sourceItem = visibleTimeline.find(
             (item) => item.replyTargetEventId === eventId,
           );
+          const isRelayTimeline = timelineView === "relay";
 
           return {
             eventId,
-            event: await fetchLatestEventByIdViaAuthorRelays({
-              authorPubkey: sourceItem?.replyTargetPubkey,
-              baseRelayUrls: [
-                ...readRelayUrls,
-                ...(sourceItem?.replyTargetRelayHints ?? []),
-              ],
-              eventId,
-              transport: debugRelayTransport,
-              options: { allowDirectFallback: true },
-            }),
+            event: isRelayTimeline
+              ? await fetchLatestEventByIdAcrossRelays(
+                readRelayUrls,
+                eventId,
+                debugRelayTransport,
+              )
+              : await fetchLatestEventByIdViaAuthorRelays({
+                authorPubkey: sourceItem?.replyTargetPubkey,
+                baseRelayUrls: [
+                  ...readRelayUrls,
+                  ...(sourceItem?.replyTargetRelayHints ?? []),
+                ],
+                eventId,
+                transport: debugRelayTransport,
+                options: { allowDirectFallback: true },
+              }),
           };
         }),
       );
@@ -863,67 +951,98 @@ export function App() {
         return;
       }
 
-      const foundEntries = settled
-        .filter((entry): entry is { eventId: string; event: NostrEvent } => Boolean(entry.event))
-      const nextItems = foundEntries
-        .map(({ event }) =>
-          buildReplyPreviewTimelineItem(
-            event,
-            profileSummariesRef.current.get(event.pubkey) ?? null,
-          ))
-        .filter((item) => !referenceItemIds.has(item.id));
+      setReplyPreviewCache((current) => {
+        let changed = false;
+        const next = { ...current };
+        const retryAt = Date.now() + 1_500;
 
-      for (const eventId of missingReplyTargetIds) {
-        inflightReplyPreviewIdsRef.current.delete(eventId);
-      }
+        for (const entry of settled) {
+          const event = entry.event;
 
-      for (const entry of foundEntries) {
-        resolvedReplyPreviewIdsRef.current.add(entry.eventId);
-      }
+          if (event) {
+            next[entry.eventId] = {
+              status: "hit",
+              item: buildReplyPreviewTimelineItem(
+                event,
+                profileSummariesRef.current.get(event.pubkey) ?? null,
+              ),
+            };
+          } else {
+            next[entry.eventId] = {
+              status: "missing",
+              retryAt,
+            };
+          }
+          changed = true;
+        }
 
-      if (
-        foundEntries.length < missingReplyTargetIds.length
-        && typeof window !== "undefined"
-      ) {
-        retryTimerId = window.setTimeout(() => {
-          setReplyPreviewRetryRevision((current) => current + 1);
-        }, 1_500);
-      }
-
-      if (nextItems.length === 0) {
-        return;
-      }
-
-      setReplyPreviewItems((current) => {
-        const knownIds = new Set(current.map((item) => item.id));
-        const uniqueItems = nextItems.filter((item) => !knownIds.has(item.id));
-
-        return uniqueItems.length === 0 ? current : [...current, ...uniqueItems];
+        return changed ? next : current;
       });
     })();
 
     return () => {
       cancelled = true;
-
-      if (retryTimerId !== null && typeof window !== "undefined") {
-        window.clearTimeout(retryTimerId);
-      }
     };
   }, [
     debugRelayTransport,
     profileSummariesRef,
     readRelayUrls,
     readyReadRelayCount,
-    replyPreviewRetryRevision,
+    replyPreviewCache,
+    replyPreviewRetryClock,
+    timelineView,
     timelineReferenceItems,
     visibleTimeline,
   ]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const referenceItemIds = new Set(timelineReferenceItems.map((item) => item.id));
+    let nextRetryAt = Number.POSITIVE_INFINITY;
+
+    for (const item of visibleTimeline) {
+      const eventId = item.replyTargetEventId;
+
+      if (!eventId || referenceItemIds.has(eventId)) {
+        continue;
+      }
+
+      const entry = replyPreviewCache[eventId];
+
+      if (entry?.status !== "missing") {
+        continue;
+      }
+
+      nextRetryAt = Math.min(nextRetryAt, entry.retryAt);
+    }
+
+    if (!Number.isFinite(nextRetryAt)) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setReplyPreviewRetryClock(Date.now());
+    }, Math.max(0, nextRetryAt - Date.now()));
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [replyPreviewCache, timelineReferenceItems, visibleTimeline]);
   const relayButtonTitle = buildRelayButtonTitle(activeRelayUrls, relayStatus);
   const readyWriteRelayCount = countReadyWriteRelays();
   const canSendReaction = canSignEvents;
-  const composerError = publishError ?? signerRequestError;
-  const composerMessage =
-    composerError ? null : publishMessage ?? signerRequestMessage ?? composerWelcomeMessage;
+  const runtimeComposerError = publishError ?? signerRequestError;
+  const runtimeComposerMessage =
+    runtimeComposerError ? null : publishMessage ?? signerRequestMessage;
+  const composerError = developerModeEnabled ? runtimeComposerError : null;
+  const composerMessage = developerModeEnabled
+    ? runtimeComposerMessage ?? composerWelcomeMessage
+    : runtimeComposerError || runtimeComposerMessage
+      ? null
+      : composerWelcomeMessage;
   const timelineEmptyMessage = buildTimelineEmptyMessage(
     timelineView,
     followLoadState,
@@ -1072,6 +1191,7 @@ export function App() {
       <EventJsonDialog
         isOpen={eventJsonDialogState.isOpen}
         jsonText={eventJsonDialogState.jsonText}
+        onCopy={handleCopyEventJson}
         title={eventJsonDialogState.title}
         onClose={() => {
           setEventJsonDialogState((current) => ({

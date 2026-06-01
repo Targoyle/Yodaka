@@ -665,6 +665,121 @@ describe("RelayClient", () => {
     });
   });
 
+  it("notify filter を既存接続へ張り、変更時は notify subscription だけ差し替える", async () => {
+    const events: RelayEventContext[] = [];
+    const client = createRelayClient({
+      onEvent: async (context: RelayEventContext) => {
+        events.push(context);
+      },
+    });
+
+    client.setNotifyFilters([{ kinds: [1, 7], "#p": ["viewer-a"], since: 123 }]);
+    client.connect();
+    const socket = MockWebSocket.instances[0];
+    socket.emitOpen();
+    await flushAsync();
+
+    const firstNotifyRequest = sentFrames(socket).find(
+      (frame) =>
+        frame[0] === "REQ"
+        && isRecord(frame[2])
+        && Array.isArray(frame[2]["#p"])
+        && frame[2]["#p"][0] === "viewer-a",
+    );
+    expect(firstNotifyRequest).toBeDefined();
+
+    const firstNotifySubscriptionId = firstNotifyRequest?.[1] as string;
+    socket.emitMessage(
+      JSON.stringify([
+        "EVENT",
+        firstNotifySubscriptionId,
+        {
+          id: "notify-a",
+          pubkey: "expected-author",
+          created_at: 1703184271,
+          kind: 7,
+          tags: [["p", "viewer-a"]],
+          content: "+",
+          sig: "sig",
+        },
+      ]),
+    );
+    await flushAsync();
+
+    expect(events.at(-1)).toMatchObject({
+      role: "notify",
+      subscriptionId: firstNotifySubscriptionId,
+      event: {
+        id: "notify-a",
+      },
+    });
+
+    client.setNotifyFilters([{ kinds: [1, 7], "#p": ["viewer-b"], since: 456 }]);
+    await flushAsync();
+
+    const closeFrames = sentFrames(socket).filter((frame) => frame[0] === "CLOSE");
+    expect(closeFrames).toContainEqual(["CLOSE", firstNotifySubscriptionId]);
+
+    const secondNotifyRequest = [...sentFrames(socket)].reverse().find(
+      (frame) =>
+        frame[0] === "REQ"
+        && isRecord(frame[2])
+        && Array.isArray(frame[2]["#p"])
+        && frame[2]["#p"][0] === "viewer-b",
+    );
+    expect(secondNotifyRequest).toBeDefined();
+  });
+
+  it("reaction filter を既存接続へ張り、reaction event を専用 role で受ける", async () => {
+    const events: RelayEventContext[] = [];
+    const client = createRelayClient({
+      onEvent: async (context: RelayEventContext) => {
+        events.push(context);
+      },
+    });
+
+    client.setReactionFilters([{ kinds: [7], authors: ["viewer-a"], since: 123 }]);
+    client.connect();
+    const socket = MockWebSocket.instances[0];
+    socket.emitOpen();
+    await flushAsync();
+
+    const reactionRequest = sentFrames(socket).find(
+      (frame) =>
+        frame[0] === "REQ"
+        && isRecord(frame[2])
+        && Array.isArray(frame[2].authors)
+        && frame[2].authors[0] === "viewer-a",
+    );
+    expect(reactionRequest).toBeDefined();
+
+    const reactionSubscriptionId = reactionRequest?.[1] as string;
+    socket.emitMessage(
+      JSON.stringify([
+        "EVENT",
+        reactionSubscriptionId,
+        {
+          id: "reaction-a",
+          pubkey: "viewer-a",
+          created_at: 1703184271,
+          kind: 7,
+          tags: [["e", "target-id"]],
+          content: "+",
+          sig: "sig",
+        },
+      ]),
+    );
+    await flushAsync();
+
+    expect(events.at(-1)).toMatchObject({
+      role: "reaction",
+      subscriptionId: reactionSubscriptionId,
+      event: {
+        id: "reaction-a",
+      },
+    });
+  });
+
   it("profiles 購読は EOSE 未着でも timeout で CLOSE する", async () => {
     vi.useFakeTimers();
 

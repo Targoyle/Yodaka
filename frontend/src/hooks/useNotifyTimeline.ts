@@ -25,8 +25,6 @@ import {
 import type { TimelineItem, TimelineProfile } from "../lib/wasm/client";
 import { useTemporaryRelayTransport } from "./useTemporaryRelayTransport";
 
-const NOTIFY_REFRESH_INTERVAL_MS = 15_000;
-
 type UseNotifyTimelineArgs = {
   accountTimeline: TimelineItem[];
   autoSignerPromptBlocked: boolean;
@@ -60,10 +58,14 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
     notificationCount: number;
     resolvedTargetCount: number;
     lastFetchedAt: number | null;
+    lastEventAt: number | null;
+    liveEventCount: number;
   }>({
     notificationCount: 0,
     resolvedTargetCount: 0,
     lastFetchedAt: null,
+    lastEventAt: null,
+    liveEventCount: 0,
   });
   const shouldPrefetchNotify =
     args.notifyTabEnabled
@@ -84,6 +86,7 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
   const markSignerUnavailableRef = useRef(args.markSignerUnavailable);
   const knownNotifyTargetEventIdsRef = useRef<Set<string>>(new Set());
   const notifyTimelineRef = useRef<TimelineItem[]>([]);
+  const liveNotifyEventIdsRef = useRef<string[]>([]);
 
   useEffect(() => {
     ensureViewerPubkeyRef.current = args.ensureViewerPubkey;
@@ -102,21 +105,90 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
   }, [notifyTimeline]);
 
   useEffect(() => {
-    if (
-      args.relayBootstrapDeferred
-      || (args.timelineView !== "notify" && !shouldPrefetchNotify)
-    ) {
+    if (args.viewerPubkey) {
       return;
     }
 
-    const intervalId = window.setInterval(() => {
+    liveNotifyEventIdsRef.current = [];
+  }, [args.viewerPubkey]);
+
+  useEffect(() => {
+    if (!args.notifyTabEnabled) {
+      liveNotifyEventIdsRef.current = [];
+    }
+  }, [args.notifyTabEnabled]);
+
+  useEffect(() => {
+    const coordinator = args.relayCoordinatorRef.current;
+
+    if (!coordinator) {
+      return;
+    }
+
+    if (
+      args.relayBootstrapDeferred
+      || !args.notifyTabEnabled
+      || !args.viewerPubkey
+      || accountRelayUrls.length === 0
+    ) {
+      coordinator.setNotifyListener(null);
+      coordinator.setNotifyFilters(null);
+      return;
+    }
+
+    const viewerPubkey = args.viewerPubkey;
+    const since = Math.max(0, Math.floor(Date.now() / 1000) - 5);
+
+    coordinator.setNotifyListener((context) => {
+      if (
+        context.event.kind !== 1
+        && context.event.kind !== 7
+      ) {
+        return;
+      }
+
+      if (normalizeNotifyPubkey(context.event.pubkey) === viewerPubkey) {
+        return;
+      }
+
+      if (!rememberLiveNotifyEventId(liveNotifyEventIdsRef.current, context.event.id)) {
+        return;
+      }
+
+      setNotifyFetchMeta((current) => ({
+        ...current,
+        lastEventAt: Date.now(),
+        liveEventCount: current.liveEventCount + 1,
+      }));
       setRefreshRevision((current) => current + 1);
-    }, NOTIFY_REFRESH_INTERVAL_MS);
+    });
+    coordinator.setNotifyFilters((relayUrl) => {
+      if (!accountRelayUrls.includes(relayUrl)) {
+        return null;
+      }
+
+      return [
+        {
+          kinds: [1, 7],
+          "#p": [viewerPubkey],
+          since,
+        },
+      ];
+    });
 
     return () => {
-      window.clearInterval(intervalId);
+      coordinator.setNotifyListener(null);
+      coordinator.setNotifyFilters(null);
     };
-  }, [args.relayBootstrapDeferred, args.timelineView, shouldPrefetchNotify]);
+  }, [
+    args.notifyTabEnabled,
+    args.readyReadRelayCount,
+    args.relayBootstrapDeferred,
+    args.relayConfigurationKey,
+    args.relayCoordinatorRef,
+    args.viewerPubkey,
+    accountRelayUrls,
+  ]);
 
   useEffect(() => {
     if (args.relayBootstrapDeferred) {
@@ -221,11 +293,13 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
 
         setNotifyEventIds(notificationEvents.map((event) => event.id));
         setNotifyTimeline(nextItems);
-        setNotifyFetchMeta({
+        setNotifyFetchMeta((current) => ({
           notificationCount: notificationEvents.length,
           resolvedTargetCount: reactionTargetEventsByReactionId.size,
           lastFetchedAt: Date.now(),
-        });
+          lastEventAt: current.lastEventAt,
+          liveEventCount: current.liveEventCount,
+        }));
         setNotifyLoadState("ready");
       } catch (error) {
         if (cancelled) {
@@ -317,6 +391,8 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
       notificationCount: 0,
       resolvedTargetCount: 0,
       lastFetchedAt: null,
+      lastEventAt: null,
+      liveEventCount: 0,
     });
     knownNotifyTargetEventIdsRef.current = new Set();
     notifyTimelineRef.current = [];
@@ -327,10 +403,19 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
     setRefreshRevision((current) => current + 1);
   }
 
+  const notifyDiagnosticLoadState: AuxiliaryLoadState =
+    notifyLoadState === "ready"
+    && args.notifyTabEnabled
+    && Boolean(args.viewerPubkey)
+    && accountRelayUrls.length > 0
+    && args.readyReadRelayCount > 0
+      ? "listening"
+      : notifyLoadState;
+
   const notifyDiagnostic = useMemo<AuxiliaryTimelineDiagnostic>(
     () => ({
       label: "Notify",
-      loadState: notifyLoadState,
+      loadState: notifyDiagnosticLoadState,
       relayCount: accountRelayUrls.length,
       readyReadRelayCount: args.readyReadRelayCount,
       itemCount: notifyTimeline.length,
@@ -339,16 +424,22 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
           ? null
           : `events ${notifyFetchMeta.notificationCount} / targets ${notifyFetchMeta.resolvedTargetCount}`,
       lastFetchedAt: notifyFetchMeta.lastFetchedAt,
+      lastEventAt: notifyFetchMeta.lastEventAt,
+      liveEventCount: notifyFetchMeta.liveEventCount,
       error: notifyError,
     }),
     [
       accountRelayUrls.length,
       args.readyReadRelayCount,
+      args.notifyTabEnabled,
+      args.viewerPubkey,
       notifyError,
+      notifyDiagnosticLoadState,
+      notifyFetchMeta.lastEventAt,
       notifyFetchMeta.lastFetchedAt,
+      notifyFetchMeta.liveEventCount,
       notifyFetchMeta.notificationCount,
       notifyFetchMeta.resolvedTargetCount,
-      notifyLoadState,
       notifyTimeline.length,
     ],
   );
@@ -541,4 +632,18 @@ function normalizeNotifyPubkey(pubkey: string | undefined) {
 
   const normalized = pubkey.trim().toLowerCase();
   return normalized.length === 64 ? normalized : null;
+}
+
+function rememberLiveNotifyEventId(eventIds: string[], eventId: string) {
+  if (eventIds.includes(eventId)) {
+    return false;
+  }
+
+  eventIds.push(eventId);
+
+  if (eventIds.length > 256) {
+    eventIds.splice(0, eventIds.length - 256);
+  }
+
+  return true;
 }

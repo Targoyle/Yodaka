@@ -3,6 +3,7 @@ type EventJsonDialogProps = {
   jsonText: string;
   title: string;
   onClose: () => void;
+  onCopy: () => void | Promise<void>;
 };
 
 export function EventJsonDialog(props: EventJsonDialogProps) {
@@ -28,12 +29,18 @@ export function EventJsonDialog(props: EventJsonDialogProps) {
             <h2 id="event-json-title" className="dialog-title">
               {props.title}
             </h2>
-            <p className="muted dialog-text">
-              relay から取得できた raw event を表示します。取得できない場合は現在の timeline item を表示します。
-            </p>
           </div>
           <pre className="event-json-pre">{props.jsonText}</pre>
           <div className="dialog-actions">
+            <button
+              type="button"
+              className="dialog-button dialog-button-secondary"
+              onClick={() => {
+                void props.onCopy();
+              }}
+            >
+              コピー
+            </button>
             <button
               type="button"
               className="dialog-button dialog-button-secondary"

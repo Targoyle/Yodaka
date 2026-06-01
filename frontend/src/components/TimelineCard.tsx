@@ -286,7 +286,7 @@ export function TimelineCard(props: TimelineCardProps) {
               type="button"
               className="timeline-reaction-button"
               disabled={reactionButtonDisabled}
-              title={reactionButtonTitle ?? "like / upvote を送信"}
+              title={reactionButtonTitle ?? "ふぁぼ"}
               aria-label={`★ ${likeCount}`}
               onMouseEnter={props.onPauseTimelineDisplay}
               onMouseLeave={props.onResumeTimelineDisplay}
@@ -301,7 +301,6 @@ export function TimelineCard(props: TimelineCardProps) {
               type="button"
               className="timeline-reaction-button"
               disabled={reactionButtonDisabled}
-              title={reactionButtonTitle ?? "草リアクションを送信"}
               aria-label={`草 ${kusaCount}`}
               onMouseEnter={props.onPauseTimelineDisplay}
               onMouseLeave={props.onResumeTimelineDisplay}

@@ -304,6 +304,8 @@ export function useFollowTimeline(args: UseFollowTimelineArgs) {
           ? null
           : `targets ${followFetchMeta.targetCount} / notes ${followFetchMeta.noteCount}`,
       lastFetchedAt: followFetchMeta.lastFetchedAt,
+      lastEventAt: null,
+      liveEventCount: null,
       error: followError,
     }),
     [

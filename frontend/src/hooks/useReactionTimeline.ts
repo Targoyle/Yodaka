@@ -53,12 +53,17 @@ export function useReactionTimeline(args: UseReactionTimelineArgs) {
   const [reactionError, setReactionError] = useState<string | null>(null);
   const [reactionTimeline, setReactionTimeline] = useState<TimelineItem[]>([]);
   const [reactionTargetIds, setReactionTargetIds] = useState<string[]>([]);
+  const [refreshRevision, setRefreshRevision] = useState(0);
   const [reactionFetchMeta, setReactionFetchMeta] = useState<{
     targetCount: number;
     lastFetchedAt: number | null;
+    lastEventAt: number | null;
+    liveEventCount: number;
   }>({
     targetCount: 0,
     lastFetchedAt: null,
+    lastEventAt: null,
+    liveEventCount: 0,
   });
   const shouldPrefetchReaction =
     args.reactionTabEnabled
@@ -79,6 +84,7 @@ export function useReactionTimeline(args: UseReactionTimelineArgs) {
   const markSignerUnavailableRef = useRef(args.markSignerUnavailable);
   const localReactionTargetIdsRef = useRef<string[]>([]);
   const reactionSourceKeyRef = useRef<string | null>(null);
+  const liveReactionEventIdsRef = useRef<string[]>([]);
 
   useEffect(() => {
     ensureViewerPubkeyRef.current = args.ensureViewerPubkey;
@@ -91,6 +97,88 @@ export function useReactionTimeline(args: UseReactionTimelineArgs) {
   useEffect(() => {
     markSignerUnavailableRef.current = args.markSignerUnavailable;
   }, [args.markSignerUnavailable]);
+
+  useEffect(() => {
+    if (args.viewerPubkey) {
+      return;
+    }
+
+    liveReactionEventIdsRef.current = [];
+  }, [args.viewerPubkey]);
+
+  useEffect(() => {
+    if (!args.reactionTabEnabled) {
+      liveReactionEventIdsRef.current = [];
+    }
+  }, [args.reactionTabEnabled]);
+
+  useEffect(() => {
+    const coordinator = args.relayCoordinatorRef.current;
+
+    if (!coordinator) {
+      return;
+    }
+
+    if (
+      args.relayBootstrapDeferred
+      || !args.reactionTabEnabled
+      || !args.viewerPubkey
+      || accountRelayUrls.length === 0
+    ) {
+      coordinator.setReactionListener(null);
+      coordinator.setReactionFilters(null);
+      return;
+    }
+
+    const viewerPubkey = args.viewerPubkey;
+    const since = Math.max(0, Math.floor(Date.now() / 1000) - 5);
+
+    coordinator.setReactionListener((context) => {
+      if (context.event.kind !== 7) {
+        return;
+      }
+
+      if (normalizeReactionPubkey(context.event.pubkey) !== viewerPubkey) {
+        return;
+      }
+
+      if (!rememberLiveReactionEventId(liveReactionEventIdsRef.current, context.event.id)) {
+        return;
+      }
+
+      setReactionFetchMeta((current) => ({
+        ...current,
+        lastEventAt: Date.now(),
+        liveEventCount: current.liveEventCount + 1,
+      }));
+      setRefreshRevision((current) => current + 1);
+    });
+    coordinator.setReactionFilters((relayUrl) => {
+      if (!accountRelayUrls.includes(relayUrl)) {
+        return null;
+      }
+
+      return [
+        {
+          kinds: [7],
+          authors: [viewerPubkey],
+          since,
+        },
+      ];
+    });
+
+    return () => {
+      coordinator.setReactionListener(null);
+      coordinator.setReactionFilters(null);
+    };
+  }, [
+    args.reactionTabEnabled,
+    args.relayBootstrapDeferred,
+    args.relayConfigurationKey,
+    args.relayCoordinatorRef,
+    args.viewerPubkey,
+    accountRelayUrls,
+  ]);
 
   useEffect(() => {
     if (args.relayBootstrapDeferred) {
@@ -199,10 +287,12 @@ export function useReactionTimeline(args: UseReactionTimelineArgs) {
 
           return timelineItemsEqual(current, next) ? current : next;
         });
-        setReactionFetchMeta({
+        setReactionFetchMeta((current) => ({
           targetCount: nextTargetIds.length,
           lastFetchedAt: Date.now(),
-        });
+          lastEventAt: current.lastEventAt,
+          liveEventCount: current.liveEventCount,
+        }));
         setReactionLoadState("ready");
       } catch (error) {
         if (cancelled) {
@@ -238,6 +328,7 @@ export function useReactionTimeline(args: UseReactionTimelineArgs) {
     accountRelayUrls,
     oneShotTransport.ready,
     oneShotTransport.relayTransport,
+    refreshRevision,
     shouldPrefetchReaction,
   ]);
 
@@ -279,9 +370,12 @@ export function useReactionTimeline(args: UseReactionTimelineArgs) {
     setReactionError(null);
     setReactionTimeline([]);
     setReactionTargetIds([]);
+    setRefreshRevision(0);
     setReactionFetchMeta({
       targetCount: 0,
       lastFetchedAt: null,
+      lastEventAt: null,
+      liveEventCount: 0,
     });
   }, []);
 
@@ -324,20 +418,31 @@ export function useReactionTimeline(args: UseReactionTimelineArgs) {
 
     setReactionLoadState((current) => (current === "idle" ? "ready" : current));
     setReactionError(null);
-    setReactionFetchMeta({
+    setReactionFetchMeta((current) => ({
       targetCount: localReactionTargetIdsRef.current.length,
       lastFetchedAt: Date.now(),
-    });
+      lastEventAt: current.lastEventAt,
+      liveEventCount: current.liveEventCount,
+    }));
   }, [
     args.profileSummariesRef,
     args.timeline,
     args.timelineLimit,
   ]);
 
+  const reactionDiagnosticLoadState: AuxiliaryLoadState =
+    reactionLoadState === "ready"
+    && args.reactionTabEnabled
+    && Boolean(args.viewerPubkey)
+    && accountRelayUrls.length > 0
+    && args.readyReadRelayCount > 0
+      ? "listening"
+      : reactionLoadState;
+
   const reactionDiagnostic = useMemo<AuxiliaryTimelineDiagnostic>(
     () => ({
       label: "Reaction",
-      loadState: reactionLoadState,
+      loadState: reactionDiagnosticLoadState,
       relayCount: accountRelayUrls.length,
       readyReadRelayCount: args.readyReadRelayCount,
       itemCount: reactionTimeline.length,
@@ -346,15 +451,21 @@ export function useReactionTimeline(args: UseReactionTimelineArgs) {
           ? null
           : `targets ${reactionFetchMeta.targetCount}`,
       lastFetchedAt: reactionFetchMeta.lastFetchedAt,
+      lastEventAt: reactionFetchMeta.lastEventAt,
+      liveEventCount: reactionFetchMeta.liveEventCount,
       error: reactionError,
     }),
     [
       accountRelayUrls.length,
       args.readyReadRelayCount,
+      args.reactionTabEnabled,
+      args.viewerPubkey,
       reactionError,
+      reactionDiagnosticLoadState,
+      reactionFetchMeta.lastEventAt,
       reactionFetchMeta.lastFetchedAt,
+      reactionFetchMeta.liveEventCount,
       reactionFetchMeta.targetCount,
-      reactionLoadState,
       reactionTimeline.length,
     ],
   );
@@ -382,4 +493,27 @@ function orderReactionTimeline(items: TimelineItem[], targetIds: string[], limit
     .map((targetId) => itemsById.get(targetId) ?? null)
     .filter((item): item is TimelineItem => item !== null)
     .slice(0, limit);
+}
+
+function normalizeReactionPubkey(pubkey: string | undefined) {
+  if (!pubkey) {
+    return null;
+  }
+
+  const normalized = pubkey.trim().toLowerCase();
+  return normalized.length === 64 ? normalized : null;
+}
+
+function rememberLiveReactionEventId(eventIds: string[], eventId: string) {
+  if (eventIds.includes(eventId)) {
+    return false;
+  }
+
+  eventIds.push(eventId);
+
+  if (eventIds.length > 256) {
+    eventIds.splice(0, eventIds.length - 256);
+  }
+
+  return true;
 }

@@ -20,7 +20,7 @@ export type RelayConnectionPhase =
   | "reconnecting"
   | "closed";
 
-export type SubscriptionRole = "feed" | "profiles";
+export type SubscriptionRole = "feed" | "profiles" | "notify" | "reaction";
 type TrackedSubscriptionRole = SubscriptionRole | "temporary";
 
 export type RelayStatus = {
@@ -205,6 +205,8 @@ export class RelayClient {
   private openTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
   private subscriptions = new Map<string, TrackedSubscriptionRole>();
   private feedSubscriptionFilters = new Map<string, RelayFilter[]>();
+  private notifySubscriptionFilters = new Map<string, RelayFilter[]>();
+  private reactionSubscriptionFilters = new Map<string, RelayFilter[]>();
   private profileSubscriptionAuthors = new Map<string, Set<string>>();
   private profileSubscriptionTimers = new Map<
     string,
@@ -215,6 +217,12 @@ export class RelayClient {
   private publishAckWaiters = new Map<string, PublishAckWaiter>();
   private currentFeedSubscriptionId: string | null = null;
   private pendingFeedEoseSubscriptionId: string | null = null;
+  private currentNotifySubscriptionId: string | null = null;
+  private currentReactionSubscriptionId: string | null = null;
+  private configuredNotifyFilters: RelayFilter[] | null = null;
+  private configuredNotifyFiltersKey = "[]";
+  private configuredReactionFilters: RelayFilter[] | null = null;
+  private configuredReactionFiltersKey = "[]";
   private attempt = 0;
   private manuallyClosed = false;
 
@@ -226,6 +234,46 @@ export class RelayClient {
     this.manuallyClosed = false;
     this.clearReconnectTimer();
     this.openSocket();
+  }
+
+  setNotifyFilters(filters: RelayFilter[] | null) {
+    const nextFilters = filters && filters.length > 0 ? cloneRelayFilters(filters) : null;
+    const nextFiltersKey = JSON.stringify(nextFilters ?? []);
+
+    if (nextFiltersKey === this.configuredNotifyFiltersKey) {
+      return;
+    }
+
+    this.configuredNotifyFilters = nextFilters;
+    this.configuredNotifyFiltersKey = nextFiltersKey;
+
+    const socket = this.socket;
+
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    this.rebuildNotifySubscription(socket);
+  }
+
+  setReactionFilters(filters: RelayFilter[] | null) {
+    const nextFilters = filters && filters.length > 0 ? cloneRelayFilters(filters) : null;
+    const nextFiltersKey = JSON.stringify(nextFilters ?? []);
+
+    if (nextFiltersKey === this.configuredReactionFiltersKey) {
+      return;
+    }
+
+    this.configuredReactionFilters = nextFilters;
+    this.configuredReactionFiltersKey = nextFiltersKey;
+
+    const socket = this.socket;
+
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    this.rebuildReactionSubscription(socket);
   }
 
   requestProfiles(authors: string[]) {
@@ -472,9 +520,15 @@ export class RelayClient {
 
       this.subscriptions.clear();
       this.feedSubscriptionFilters.clear();
+      this.notifySubscriptionFilters.clear();
+      this.reactionSubscriptionFilters.clear();
       this.currentFeedSubscriptionId = null;
+      this.currentNotifySubscriptionId = null;
+      this.currentReactionSubscriptionId = null;
 
       if (!filters || filters.length === 0) {
+        this.rebuildNotifySubscription(socket);
+        this.rebuildReactionSubscription(socket);
         this.updateStatus({
           phase: "live",
           relayUrl: this.options.relayUrl,
@@ -504,6 +558,9 @@ export class RelayClient {
         attempt: this.attempt,
         detail: `subscribing to feed (${subscriptionId})`,
       });
+
+      this.rebuildNotifySubscription(socket);
+      this.rebuildReactionSubscription(socket);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.options.onError?.(`feed filter の構築に失敗しました: ${message}`);
@@ -681,10 +738,20 @@ export class RelayClient {
         this.clearProfileSubscriptionState(message.subscriptionId);
         this.subscriptions.delete(message.subscriptionId);
         this.feedSubscriptionFilters.delete(message.subscriptionId);
+        this.notifySubscriptionFilters.delete(message.subscriptionId);
+        this.reactionSubscriptionFilters.delete(message.subscriptionId);
 
         if (message.subscriptionId === this.currentFeedSubscriptionId) {
           this.clearFeedEoseTimeout();
           this.currentFeedSubscriptionId = null;
+        }
+
+        if (message.subscriptionId === this.currentNotifySubscriptionId) {
+          this.currentNotifySubscriptionId = null;
+        }
+
+        if (message.subscriptionId === this.currentReactionSubscriptionId) {
+          this.currentReactionSubscriptionId = null;
         }
 
         this.options.onClosed?.({
@@ -751,9 +818,19 @@ export class RelayClient {
 
     this.subscriptions.delete(subscriptionId);
     this.feedSubscriptionFilters.delete(subscriptionId);
+    this.notifySubscriptionFilters.delete(subscriptionId);
+    this.reactionSubscriptionFilters.delete(subscriptionId);
 
     if (subscriptionId === this.currentFeedSubscriptionId) {
       this.currentFeedSubscriptionId = null;
+    }
+
+    if (subscriptionId === this.currentNotifySubscriptionId) {
+      this.currentNotifySubscriptionId = null;
+    }
+
+    if (subscriptionId === this.currentReactionSubscriptionId) {
+      this.currentReactionSubscriptionId = null;
     }
   }
 
@@ -863,6 +940,30 @@ export class RelayClient {
         : "feed filter と一致しない EVENT を破棄しました";
     }
 
+    if (role === "notify") {
+      const filters = this.notifySubscriptionFilters.get(subscriptionId);
+
+      if (!filters || filters.length === 0) {
+        return "notify filter が見つからない EVENT を破棄しました";
+      }
+
+      return matchesRelayFilters(event, filters)
+        ? null
+        : "notify filter と一致しない EVENT を破棄しました";
+    }
+
+    if (role === "reaction") {
+      const filters = this.reactionSubscriptionFilters.get(subscriptionId);
+
+      if (!filters || filters.length === 0) {
+        return "reaction filter が見つからない EVENT を破棄しました";
+      }
+
+      return matchesRelayFilters(event, filters)
+        ? null
+        : "reaction filter と一致しない EVENT を破棄しました";
+    }
+
     const expectedAuthors = this.profileSubscriptionAuthors.get(subscriptionId);
 
     if (event.kind !== 0 || !expectedAuthors?.has(event.pubkey)) {
@@ -885,6 +986,68 @@ export class RelayClient {
     return matchesRelayFilters(event, subscription.filters)
       ? null
       : "temporary filter と一致しない EVENT を破棄しました";
+  }
+
+  private rebuildNotifySubscription(socket: WebSocket) {
+    const currentSubscriptionId = this.currentNotifySubscriptionId;
+
+    if (currentSubscriptionId) {
+      this.closeSubscription(currentSubscriptionId);
+    }
+
+    if (
+      !this.configuredNotifyFilters
+      || this.configuredNotifyFilters.length === 0
+      || socket.readyState !== WebSocket.OPEN
+    ) {
+      return;
+    }
+
+    const subscriptionId = createSubscriptionId("notify");
+    const filters = cloneRelayFilters(this.configuredNotifyFilters);
+
+    this.currentNotifySubscriptionId = subscriptionId;
+    this.subscriptions.set(subscriptionId, "notify");
+    this.notifySubscriptionFilters.set(subscriptionId, filters);
+    socket.send(JSON.stringify(["REQ", subscriptionId, ...filters]));
+    this.emitDebug({
+      type: "send_req",
+      role: "notify",
+      subscriptionId,
+      detail: `sent ${filters.length} notify filters`,
+      readyState: socket.readyState,
+    });
+  }
+
+  private rebuildReactionSubscription(socket: WebSocket) {
+    const currentSubscriptionId = this.currentReactionSubscriptionId;
+
+    if (currentSubscriptionId) {
+      this.closeSubscription(currentSubscriptionId);
+    }
+
+    if (
+      !this.configuredReactionFilters
+      || this.configuredReactionFilters.length === 0
+      || socket.readyState !== WebSocket.OPEN
+    ) {
+      return;
+    }
+
+    const subscriptionId = createSubscriptionId("reaction");
+    const filters = cloneRelayFilters(this.configuredReactionFilters);
+
+    this.currentReactionSubscriptionId = subscriptionId;
+    this.subscriptions.set(subscriptionId, "reaction");
+    this.reactionSubscriptionFilters.set(subscriptionId, filters);
+    socket.send(JSON.stringify(["REQ", subscriptionId, ...filters]));
+    this.emitDebug({
+      type: "send_req",
+      role: "reaction",
+      subscriptionId,
+      detail: `sent ${filters.length} reaction filters`,
+      readyState: socket.readyState,
+    });
   }
 
   private inspectTemporaryLatestRelayMessage(
@@ -1195,8 +1358,12 @@ export class RelayClient {
     }
     this.temporarySubscriptions.clear();
     this.feedSubscriptionFilters.clear();
+    this.notifySubscriptionFilters.clear();
+    this.reactionSubscriptionFilters.clear();
     this.subscriptions.clear();
     this.currentFeedSubscriptionId = null;
+    this.currentNotifySubscriptionId = null;
+    this.currentReactionSubscriptionId = null;
   }
 
   private rejectPendingTemporarySubscriptions(message: string) {
@@ -1603,6 +1770,18 @@ function uniqueStrings(values: string[]) {
 
 export function chunkProfileAuthors(authors: string[]) {
   return chunkStrings(uniqueStrings(authors), MAX_PROFILE_AUTHORS_PER_REQ);
+}
+
+function cloneRelayFilters(filters: RelayFilter[]) {
+  return filters.map((filter) => ({
+    ...filter,
+    kinds: filter.kinds ? [...filter.kinds] : undefined,
+    authors: filter.authors ? [...filter.authors] : undefined,
+    ids: filter.ids ? [...filter.ids] : undefined,
+    "#p": filter["#p"] ? [...filter["#p"]] : undefined,
+    "#e": filter["#e"] ? [...filter["#e"]] : undefined,
+    "#a": filter["#a"] ? [...filter["#a"]] : undefined,
+  }));
 }
 
 function createSubscriptionId(role: TrackedSubscriptionRole) {

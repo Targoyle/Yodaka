@@ -327,6 +327,15 @@ select {
   min-width: 88px;
 }
 
+.settings-menu-action-button-danger {
+  color: #d96577;
+}
+
+.settings-menu-action-button-danger:hover {
+  color: #ef7f93;
+  border-color: rgba(217, 101, 119, 0.45);
+}
+
 .chip-toggle {
   position: relative;
   display: inline-flex;
@@ -1507,6 +1516,10 @@ select {
 
 .dialog-button-secondary {
   background: var(--theme-switch-bg);
+}
+
+.dialog-button-secondary:hover {
+  background: var(--theme-button-hover-bg);
 }
 
 @media (max-width: 640px) {

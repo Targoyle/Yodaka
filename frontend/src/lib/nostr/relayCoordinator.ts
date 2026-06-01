@@ -94,6 +94,18 @@ export class RelayCoordinator {
   private readonly publishRelayUrls: string[];
   private readonly clients = new Map<string, RelayClient>();
   private readonly relayStatuses = new Map<string, RelayStatus>();
+  private notifyFiltersBuilder:
+    | ((relayUrl: string) => RelayFilter[] | null | undefined)
+    | null = null;
+  private notifyListener:
+    | ((context: RelayCoordinatorEventContext) => void | Promise<void>)
+    | null = null;
+  private reactionFiltersBuilder:
+    | ((relayUrl: string) => RelayFilter[] | null | undefined)
+    | null = null;
+  private reactionListener:
+    | ((context: RelayCoordinatorEventContext) => void | Promise<void>)
+    | null = null;
 
   constructor(options: RelayCoordinatorOptions) {
     this.options = options;
@@ -127,11 +139,24 @@ export class RelayCoordinator {
       const client = new RelayClient({
         relayUrl,
         buildFeedFilters: () => this.options.buildFeedFilters(relayUrl),
-        onEvent: (context) =>
-          this.options.onEvent({
+        onEvent: async (context) => {
+          const relayContext = {
             ...context,
             relayUrl,
-          }),
+          };
+
+          if (context.role === "notify") {
+            await this.notifyListener?.(relayContext);
+            return;
+          }
+
+          if (context.role === "reaction") {
+            await this.reactionListener?.(relayContext);
+            return;
+          }
+
+          await this.options.onEvent(relayContext);
+        },
         onEose: (context) =>
           this.options.onEose?.({
             ...context,
@@ -159,6 +184,8 @@ export class RelayCoordinator {
 
       this.clients.set(relayUrl, client);
       this.relayStatuses.set(relayUrl, buildRelayStatus("idle", relayUrl));
+      this.applyNotifyFiltersToClient(relayUrl, client);
+      this.applyReactionFiltersToClient(relayUrl, client);
       client.connect();
     }
 
@@ -179,6 +206,38 @@ export class RelayCoordinator {
     }
 
     return requested;
+  }
+
+  setNotifyFilters(
+    builder: ((relayUrl: string) => RelayFilter[] | null | undefined) | null,
+  ) {
+    this.notifyFiltersBuilder = builder;
+
+    for (const [relayUrl, client] of this.clients.entries()) {
+      this.applyNotifyFiltersToClient(relayUrl, client);
+    }
+  }
+
+  setNotifyListener(
+    listener: ((context: RelayCoordinatorEventContext) => void | Promise<void>) | null,
+  ) {
+    this.notifyListener = listener;
+  }
+
+  setReactionFilters(
+    builder: ((relayUrl: string) => RelayFilter[] | null | undefined) | null,
+  ) {
+    this.reactionFiltersBuilder = builder;
+
+    for (const [relayUrl, client] of this.clients.entries()) {
+      this.applyReactionFiltersToClient(relayUrl, client);
+    }
+  }
+
+  setReactionListener(
+    listener: ((context: RelayCoordinatorEventContext) => void | Promise<void>) | null,
+  ) {
+    this.reactionListener = listener;
   }
 
   requestTemporaryEvents(
@@ -294,6 +353,16 @@ export class RelayCoordinator {
     }
 
     this.clients.clear();
+  }
+
+  private applyNotifyFiltersToClient(relayUrl: string, client: RelayClient) {
+    const filters = this.notifyFiltersBuilder?.(relayUrl) ?? null;
+    client.setNotifyFilters(filters);
+  }
+
+  private applyReactionFiltersToClient(relayUrl: string, client: RelayClient) {
+    const filters = this.reactionFiltersBuilder?.(relayUrl) ?? null;
+    client.setReactionFilters(filters);
   }
 
   private emitStatus(status: RelayCoordinatorStatus) {

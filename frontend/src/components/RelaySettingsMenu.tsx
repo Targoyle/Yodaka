@@ -199,7 +199,7 @@ export function RelaySettingsMenu(props: RelaySettingsMenuProps) {
             <span className="settings-menu-label">ローカルデータ</span>
             <button
               type="button"
-              className="relay-settings-button relay-settings-button-secondary settings-menu-action-button"
+              className="relay-settings-button relay-settings-button-secondary settings-menu-action-button settings-menu-action-button-danger"
               onClick={props.onClearLocalData}
               title="キャッシュと設定を全消去して再読み込み"
             >

@@ -318,7 +318,15 @@ function formatAuxiliaryDiagnostic(diagnostic: AuxiliaryTimelineDiagnostic) {
   }
 
   if (diagnostic.lastFetchedAt) {
-    parts.push(formatRecordedAt(diagnostic.lastFetchedAt));
+    parts.push(`fetch ${formatRecordedAt(diagnostic.lastFetchedAt)}`);
+  }
+
+  if (diagnostic.liveEventCount !== null) {
+    parts.push(`live ${diagnostic.liveEventCount}`);
+  }
+
+  if (diagnostic.lastEventAt) {
+    parts.push(`event ${formatRecordedAt(diagnostic.lastEventAt)}`);
   }
 
   if (diagnostic.loadState === "error" && diagnostic.error) {
@@ -336,6 +344,8 @@ function formatAuxiliaryLoadStateLabel(loadState: AuxiliaryTimelineDiagnostic["l
       return "LOAD";
     case "ready":
       return "READY";
+    case "listening":
+      return "LISTEN";
     case "error":
       return "ERROR";
     default:

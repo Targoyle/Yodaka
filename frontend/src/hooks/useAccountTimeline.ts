@@ -296,6 +296,8 @@ export function useAccountTimeline(args: UseAccountTimelineArgs) {
           ? null
           : `notes ${accountFetchMeta.noteCount}`,
       lastFetchedAt: accountFetchMeta.lastFetchedAt,
+      lastEventAt: null,
+      liveEventCount: null,
       error: accountError,
     }),
     [

@@ -1,6 +1,12 @@
 export type TimelineView = "relay" | "follow" | "notify" | "reaction" | "account";
 
-export type AuxiliaryLoadState = "idle" | "waiting" | "loading" | "ready" | "error";
+export type AuxiliaryLoadState =
+  | "idle"
+  | "waiting"
+  | "loading"
+  | "ready"
+  | "listening"
+  | "error";
 
 export type AuxiliaryTimelineDiagnostic = {
   label: string;
@@ -10,6 +16,8 @@ export type AuxiliaryTimelineDiagnostic = {
   itemCount: number;
   summary: string | null;
   lastFetchedAt: number | null;
+  lastEventAt: number | null;
+  liveEventCount: number | null;
   error: string | null;
 };
 
