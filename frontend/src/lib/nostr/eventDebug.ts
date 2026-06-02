@@ -22,6 +22,26 @@ export async function fetchLatestEventByIdAcrossRelays(
     return null;
   }
 
+  try {
+    return await Promise.any(
+      normalizedRelays.map(async (relayUrl) => {
+        const event = await transport.requestTemporaryLatestEvent!(
+          relayUrl,
+          [{ ids: [eventId], limit: 1 }],
+          DEBUG_EVENT_REQUEST_TIMEOUT_MS,
+        );
+
+        if (!event) {
+          throw new Error("event not found");
+        }
+
+        return event;
+      }),
+    );
+  } catch {
+    // どの read relay でも見つからなかった場合だけ、従来の fallback へ進む
+  }
+
   const settled = await Promise.allSettled(
     normalizedRelays.map((relayUrl) =>
       transport.requestTemporaryLatestEvent!(

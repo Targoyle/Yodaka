@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { decodeNpub, decodeNsec, encodeNevent, encodeNpub, encodeNsec } from "./nip19";
+import {
+  decodeNevent,
+  decodeNpub,
+  decodeNsec,
+  encodeNevent,
+  encodeNpub,
+  encodeNsec,
+} from "./nip19";
 
 describe("encodeNpub", () => {
   it("既知の公開鍵を npub へ変換できる", () => {
@@ -29,6 +36,41 @@ describe("encodeNevent", () => {
     expect(encodeNevent("")).toBeNull();
     expect(encodeNevent("not-hex")).toBeNull();
     expect(encodeNevent("dbe57554")).toBeNull();
+  });
+});
+
+describe("decodeNevent", () => {
+  it("nevent を event id へ戻せる", () => {
+    const eventId =
+      "dbe57554549f92c08bea790b05dc37dec6f3373303123f9e231635ee594ceb6a";
+    const nevent = encodeNevent(eventId);
+
+    expect(nevent).not.toBeNull();
+    expect(decodeNevent(nevent ?? "")).toEqual({
+      eventId,
+      relayUrls: [],
+      authorPubkey: null,
+    });
+  });
+
+  it("relay hint と author を含む nevent を読める", () => {
+    expect(
+      decodeNevent(
+        "nevent1qqsqmjvzgayw2xfr4dcwlswu9zq45rjanpjqpk0qtar05aheda89ssgxykq0y",
+      ),
+    ).toEqual({
+      eventId: "0dc9824748e51923ab70efc1dc28815a0e5d986400d9e05f46fa76f96f4e5841",
+      relayUrls: [],
+      authorPubkey: null,
+    });
+  });
+
+  it("不正な nevent は null を返す", () => {
+    expect(decodeNevent("")).toBeNull();
+    expect(decodeNevent("nevent1invalid")).toBeNull();
+    expect(
+      decodeNevent("npub14f8usejl26twx0dhuxjh9cas7keav9vr0v8nvtwtrjqx3vycc76qqh9nsy"),
+    ).toBeNull();
   });
 });
 

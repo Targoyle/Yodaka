@@ -12,6 +12,7 @@ import { RelaySettingItem } from "./RelaySettingItem";
 type RelaySettingsMenuProps = {
   accountTabEnabled: boolean;
   developerModeEnabled: boolean;
+  physicsEnabled: boolean;
   keyMinerOpen: boolean;
   notifyTabEnabled: boolean;
   profileImagesEnabled: boolean;
@@ -28,6 +29,7 @@ type RelaySettingsMenuProps = {
   onClearLocalData: () => void;
   onKeyMinerToggle: () => void;
   onNotifyTabToggle: ChangeEventHandler<HTMLInputElement>;
+  onPhysicsToggle: ChangeEventHandler<HTMLInputElement>;
   onProfileImagesToggle: ChangeEventHandler<HTMLInputElement>;
   onReactionTabToggle: ChangeEventHandler<HTMLInputElement>;
   onRelayAdd: FormEventHandler<HTMLFormElement>;
@@ -195,6 +197,31 @@ export function RelaySettingsMenu(props: RelaySettingsMenuProps) {
               </span>
             </label>
           </div>
+          {props.developerModeEnabled ? (
+            <div className="settings-menu-row">
+              <span className="settings-menu-label">物理演算</span>
+              <label
+                className={`chip-toggle settings-chip-toggle${
+                  props.physicsEnabled ? " chip-toggle-active" : ""
+                }`}
+                title="物理演算"
+              >
+                <input
+                  className="chip-toggle-input"
+                  type="checkbox"
+                  checked={props.physicsEnabled}
+                  onChange={props.onPhysicsToggle}
+                  aria-label="物理演算"
+                />
+                <span className="chip-toggle-icon" aria-hidden="true">
+                  {props.physicsEnabled ? "◉" : "○"}
+                </span>
+                <span className="chip-toggle-label">
+                  {props.physicsEnabled ? "ON" : "OFF"}
+                </span>
+              </label>
+            </div>
+          ) : null}
           <div className="settings-menu-row">
             <span className="settings-menu-label">ローカルデータ</span>
             <button

@@ -460,16 +460,16 @@ impl Timeline {
     ) -> Option<String> {
         let preferred_reply_p_target_pubkey = find_preferred_reply_p_target_pubkey(event);
 
-        if let Some(reply_tag) = find_reply_event_tag(event) {
+        if let Some(reply_target_tag) = find_reply_target_event_tag(event) {
             if let Some(reply_target_pubkey) =
-                normalize_tagged_pubkey(reply_tag.get(4).map(String::as_str))
+                normalize_tagged_pubkey(reply_target_tag.get(4).map(String::as_str))
             {
                 if reply_target_pubkey != event.pubkey {
                     return Some(reply_target_pubkey);
                 }
             }
 
-            if let Some(referenced_event) = reply_tag
+            if let Some(referenced_event) = reply_target_tag
                 .get(1)
                 .and_then(|event_id| self.events.get(event_id))
             {
@@ -483,48 +483,12 @@ impl Timeline {
             }
 
             if let Some(reply_target_pubkey) =
-                normalize_tagged_pubkey(reply_tag.get(4).map(String::as_str))
+                normalize_tagged_pubkey(reply_target_tag.get(4).map(String::as_str))
             {
                 return Some(reply_target_pubkey);
             }
 
-            if let Some(referenced_event) = reply_tag
-                .get(1)
-                .and_then(|event_id| self.events.get(event_id))
-            {
-                return Some(referenced_event.pubkey.clone());
-            }
-        }
-
-        if let Some(root_tag) = find_root_event_tag(event) {
-            if let Some(reply_target_pubkey) =
-                normalize_tagged_pubkey(root_tag.get(4).map(String::as_str))
-            {
-                if reply_target_pubkey != event.pubkey {
-                    return Some(reply_target_pubkey);
-                }
-            }
-
-            if let Some(referenced_event) = root_tag
-                .get(1)
-                .and_then(|event_id| self.events.get(event_id))
-            {
-                if referenced_event.pubkey != event.pubkey {
-                    return Some(referenced_event.pubkey.clone());
-                }
-            }
-
-            if let Some(reply_target_pubkey) = preferred_reply_p_target_pubkey.clone() {
-                return Some(reply_target_pubkey);
-            }
-
-            if let Some(reply_target_pubkey) =
-                normalize_tagged_pubkey(root_tag.get(4).map(String::as_str))
-            {
-                return Some(reply_target_pubkey);
-            }
-
-            if let Some(referenced_event) = root_tag
+            if let Some(referenced_event) = reply_target_tag
                 .get(1)
                 .and_then(|event_id| self.events.get(event_id))
             {
@@ -552,40 +516,26 @@ impl Timeline {
     }
 
     fn reply_target_event_id_for_event(&self, event: &StoredEvent) -> Option<String> {
-        if let Some(reply_tag) = find_reply_event_tag(event) {
-            if let Some(event_id) = reply_tag.get(1) {
-                return Some(event_id.clone());
-            }
-        }
-
-        if let Some(root_tag) = find_root_event_tag(event) {
-            if let Some(event_id) = root_tag.get(1) {
-                return Some(event_id.clone());
-            }
-        }
-
-        event.tags
-            .iter()
-            .find(|tag| tag.first().is_some_and(|value| value == "e") && tag.get(1).is_some())
-            .and_then(|tag| tag.get(1).cloned())
+        find_reply_target_event_tag(event).and_then(|tag| tag.get(1).cloned())
     }
 
     fn reply_target_relay_hints_for_event(&self, event: &StoredEvent) -> Vec<String> {
         let mut relay_hints = Vec::new();
 
-        if let Some(reply_tag) = find_reply_event_tag(event) {
-            push_reply_relay_hint(&mut relay_hints, reply_tag.get(2).map(String::as_str));
+        let reply_target_tag = find_reply_target_event_tag(event);
+        let root_tag = find_root_event_tag(event);
+
+        if let Some(reply_target_tag) = reply_target_tag {
+            push_reply_relay_hint(&mut relay_hints, reply_target_tag.get(2).map(String::as_str));
         }
 
-        if let Some(root_tag) = find_root_event_tag(event) {
-            push_reply_relay_hint(&mut relay_hints, root_tag.get(2).map(String::as_str));
-        }
-
-        for tag in &event.tags {
-            if !tag.first().is_some_and(|value| value == "e") {
-                continue;
+        if let Some(root_tag) = root_tag {
+            if Some(root_tag) != reply_target_tag {
+                push_reply_relay_hint(&mut relay_hints, root_tag.get(2).map(String::as_str));
             }
+        }
 
+        for tag in list_event_reference_tags(event) {
             push_reply_relay_hint(&mut relay_hints, tag.get(2).map(String::as_str));
         }
 
@@ -1010,6 +960,30 @@ fn find_reply_event_tag(event: &StoredEvent) -> Option<&Vec<String>> {
     })
 }
 
+fn list_event_reference_tags(event: &StoredEvent) -> Vec<&Vec<String>> {
+    event.tags
+        .iter()
+        .filter(|tag| tag.first().is_some_and(|value| value == "e") && tag.get(1).is_some())
+        .collect()
+}
+
+fn find_positional_reply_event_tag(event: &StoredEvent) -> Option<&Vec<String>> {
+    let e_tags = list_event_reference_tags(event);
+
+    match e_tags.len() {
+        0 => None,
+        1 => Some(e_tags[0]),
+        2 => Some(e_tags[1]),
+        _ => e_tags.last().copied(),
+    }
+}
+
+fn find_reply_target_event_tag(event: &StoredEvent) -> Option<&Vec<String>> {
+    find_reply_event_tag(event)
+        .or_else(|| find_root_event_tag(event))
+        .or_else(|| find_positional_reply_event_tag(event))
+}
+
 fn normalize_tagged_pubkey(value: Option<&str>) -> Option<String> {
     let normalized = value?.trim().to_ascii_lowercase();
 
@@ -1102,11 +1076,7 @@ fn find_root_id(event: &StoredEvent) -> Option<String> {
         return root_tag.get(1).cloned();
     }
 
-    let e_tags: Vec<&Vec<String>> = event
-        .tags
-        .iter()
-        .filter(|tag| tag.first().is_some_and(|value| value == "e"))
-        .collect();
+    let e_tags = list_event_reference_tags(event);
 
     e_tags.first().and_then(|tag| tag.get(1).cloned())
 }
@@ -1414,6 +1384,157 @@ mod tests {
             Some(root_author.as_str())
         );
         assert_eq!(items[0].reply_context_pubkeys, vec![root_author]);
+    }
+
+    #[test]
+    fn single_positional_e_tag_is_treated_as_reply_target() {
+        let mut timeline = Timeline::new();
+        let reply_keys =
+            test_keys("adadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadad");
+        let reply_target_keys =
+            test_keys("bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc");
+        let reply_target_author = reply_target_keys.public_key().to_hex();
+        let reply = EventBuilder::text_note("reply")
+            .tag(
+                Tag::parse([
+                    "e",
+                    "target-id",
+                    "wss://relay.example/",
+                    "",
+                    &reply_target_author,
+                ])
+                .expect("reply tag should parse"),
+            )
+            .tag(Tag::parse(["p", &reply_target_author]).expect("p tag should parse"))
+            .custom_created_at(Timestamp::from_secs(110))
+            .sign_with_keys(&reply_keys)
+            .expect("reply should sign");
+
+        assert!(timeline
+            .verify_and_insert(&reply.as_json())
+            .expect("reply should verify"));
+
+        let items = timeline.list_timeline(10, None);
+        assert_eq!(items[0].reply_target_event_id.as_deref(), Some("target-id"));
+        assert_eq!(
+            items[0].reply_target_pubkey.as_deref(),
+            Some(reply_target_author.as_str())
+        );
+        assert_eq!(
+            items[0].reply_target_relay_hints,
+            vec!["wss://relay.example/".to_owned()]
+        );
+    }
+
+    #[test]
+    fn second_positional_e_tag_is_treated_as_direct_reply_target() {
+        let mut timeline = Timeline::new();
+        let reply_keys =
+            test_keys("cdadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadad");
+        let root_keys =
+            test_keys("efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef");
+        let reply_target_keys =
+            test_keys("0101010101010101010101010101010101010101010101010101010101010101");
+        let root_author = root_keys.public_key().to_hex();
+        let reply_target_author = reply_target_keys.public_key().to_hex();
+        let reply = EventBuilder::text_note("reply")
+            .tag(
+                Tag::parse(["e", "root-id", "wss://root.example/", "", &root_author])
+                    .expect("root tag should parse"),
+            )
+            .tag(
+                Tag::parse([
+                    "e",
+                    "reply-id-2",
+                    "wss://reply.example/",
+                    "",
+                    &reply_target_author,
+                ])
+                .expect("reply tag should parse"),
+            )
+            .tag(Tag::parse(["p", &root_author]).expect("root p tag should parse"))
+            .tag(Tag::parse(["p", &reply_target_author]).expect("reply p tag should parse"))
+            .custom_created_at(Timestamp::from_secs(110))
+            .sign_with_keys(&reply_keys)
+            .expect("reply should sign");
+
+        assert!(timeline
+            .verify_and_insert(&reply.as_json())
+            .expect("reply should verify"));
+
+        let items = timeline.list_timeline(10, None);
+        assert_eq!(items[0].reply_target_event_id.as_deref(), Some("reply-id-2"));
+        assert_eq!(
+            items[0].reply_target_pubkey.as_deref(),
+            Some(reply_target_author.as_str())
+        );
+        assert_eq!(
+            items[0].reply_target_relay_hints,
+            vec![
+                "wss://reply.example/".to_owned(),
+                "wss://root.example/".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn last_positional_e_tag_is_treated_as_direct_reply_target_when_three_or_more_exist() {
+        let mut timeline = Timeline::new();
+        let reply_keys =
+            test_keys("0202020202020202020202020202020202020202020202020202020202020202");
+        let root_keys =
+            test_keys("0303030303030303030303030303030303030303030303030303030303030303");
+        let mention_keys =
+            test_keys("0404040404040404040404040404040404040404040404040404040404040404");
+        let reply_target_keys =
+            test_keys("0505050505050505050505050505050505050505050505050505050505050505");
+        let root_author = root_keys.public_key().to_hex();
+        let mention_author = mention_keys.public_key().to_hex();
+        let reply_target_author = reply_target_keys.public_key().to_hex();
+        let reply = EventBuilder::text_note("reply")
+            .tag(
+                Tag::parse(["e", "root-id", "wss://root.example/", "", &root_author])
+                    .expect("root tag should parse"),
+            )
+            .tag(
+                Tag::parse(["e", "mention-id", "wss://mention.example/", "", &mention_author])
+                    .expect("mention tag should parse"),
+            )
+            .tag(
+                Tag::parse([
+                    "e",
+                    "reply-id-3",
+                    "wss://reply.example/",
+                    "",
+                    &reply_target_author,
+                ])
+                .expect("reply tag should parse"),
+            )
+            .tag(Tag::parse(["p", &root_author]).expect("root p tag should parse"))
+            .tag(Tag::parse(["p", &mention_author]).expect("mention p tag should parse"))
+            .tag(Tag::parse(["p", &reply_target_author]).expect("reply p tag should parse"))
+            .custom_created_at(Timestamp::from_secs(110))
+            .sign_with_keys(&reply_keys)
+            .expect("reply should sign");
+
+        assert!(timeline
+            .verify_and_insert(&reply.as_json())
+            .expect("reply should verify"));
+
+        let items = timeline.list_timeline(10, None);
+        assert_eq!(items[0].reply_target_event_id.as_deref(), Some("reply-id-3"));
+        assert_eq!(
+            items[0].reply_target_pubkey.as_deref(),
+            Some(reply_target_author.as_str())
+        );
+        assert_eq!(
+            items[0].reply_target_relay_hints,
+            vec![
+                "wss://reply.example/".to_owned(),
+                "wss://root.example/".to_owned(),
+                "wss://mention.example/".to_owned(),
+            ]
+        );
     }
 
     #[test]

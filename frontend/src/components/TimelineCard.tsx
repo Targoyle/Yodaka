@@ -1,4 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEventHandler,
+  type Ref,
+} from "react";
 import {
   formatAuthorLabel,
   formatAuthorNameLabel,
@@ -6,6 +13,7 @@ import {
   formatAvatarLabel,
   formatPubkey,
   formatReplyContextLabel,
+  formatReplyTargetLabel,
 } from "../lib/nostr/profilePresentation";
 import { sanitizeProfilePictureUrl } from "../lib/nostr/profile";
 import {
@@ -22,18 +30,24 @@ const MAX_REPLY_BANDS = 6;
 
 type TimelineCardProps = {
   canSendReaction: boolean;
+  className?: string;
   developerModeEnabled: boolean;
   isPublishing: boolean;
   isProfileImageEnabled: boolean;
   isReactionPending: boolean;
   item: TimelineItem;
+  itemRef?: Ref<HTMLLIElement>;
   onCopyEventId: (eventId: string) => void | Promise<void>;
   onPauseTimelineDisplay: () => void;
+  onPointerDown?: PointerEventHandler<HTMLLIElement>;
   onReact: (item: TimelineItem, reactionIntent: ReactionIntent) => void | Promise<void>;
   onResumeTimelineDisplay: () => void;
   onViewEventJson: (item: TimelineItem) => void | Promise<void>;
+  physicsMode?: boolean;
   readyWriteRelayCount: number;
   replyTargetPreviewItem: TimelineItem | null;
+  replyTargetPreviewStatus: "hit" | "pending" | "missing" | null;
+  style?: CSSProperties;
   timelineView: TimelineView;
 };
 
@@ -45,6 +59,7 @@ export function TimelineCard(props: TimelineCardProps) {
   const avatarLabel = formatAvatarLabel(props.item, displayPubkey);
   const avatarStyle = buildAvatarStyle(props.item.pubkey);
   const replyContextLabel = formatReplyContextLabel(props.item);
+  const replyTargetLabel = formatReplyTargetLabel(props.item);
   const replyBandStyle = buildReplyBandStyle(
     buildTimelineBandPubkeys(props.timelineView, props.item),
   );
@@ -87,13 +102,29 @@ export function TimelineCard(props: TimelineCardProps) {
   const replyTargetPreviewContent = replyTargetPreviewItem
     ? formatReplyTargetPreviewContent(replyTargetPreviewItem)
     : null;
-  const replyTargetPreviewPubkey = replyTargetPreviewItem
-    ? formatPubkey(replyTargetPreviewItem.pubkey)
+  const replyTargetPreviewSourceItem = replyTargetPreviewItem && (
+    replyTargetPreviewItem.pubkey === props.item.replyTargetPubkey
+    && props.item.replyTargetProfile
+  )
+    ? {
+        ...replyTargetPreviewItem,
+        profile: props.item.replyTargetProfile,
+      }
+    : replyTargetPreviewItem;
+  const replyTargetPreviewPubkey = replyTargetPreviewSourceItem
+    ? formatPubkey(replyTargetPreviewSourceItem.pubkey)
     : null;
-  const replyTargetPreviewAuthorLabel = replyTargetPreviewItem && replyTargetPreviewPubkey
-    ? formatAuthorLabel(replyTargetPreviewItem, replyTargetPreviewPubkey)
+  const replyTargetPreviewAuthorLabel = replyTargetPreviewSourceItem && replyTargetPreviewPubkey
+    ? formatAuthorLabel(replyTargetPreviewSourceItem, replyTargetPreviewPubkey)
     : null;
-  const showReactionButton = props.item.kind === 1;
+  const replyTargetPreviewPlaceholderLabel =
+    !replyTargetPreviewAuthorLabel && replyTargetLabel
+      ? `↪ ${replyTargetLabel}`
+      : null;
+  const replyTargetPreviewPlaceholderText = formatReplyPreviewPlaceholderText(
+    props.replyTargetPreviewStatus,
+  );
+  const showReactionButton = !props.physicsMode && props.item.kind === 1;
   const likeCount = props.item.likeCount;
   const kusaCount = props.item.kusaCount ?? 0;
   const moreReactionCount = props.item.moreReactionCount ?? 0;
@@ -186,14 +217,17 @@ export function TimelineCard(props: TimelineCardProps) {
 
   return (
     <li
-      className={`timeline-card${replyBandStyle ? " timeline-card-reply" : ""}`}
+      ref={props.itemRef}
+      className={`timeline-card${replyBandStyle ? " timeline-card-reply" : ""}${props.physicsMode ? " timeline-card-physics" : ""}${props.className ? ` ${props.className}` : ""}`}
       style={
         replyBandStyle
           ? {
               paddingInlineStart: `${16 + replyBandStyle.width + 10}px`,
+              ...props.style,
             }
-          : undefined
+          : props.style
       }
+      onPointerDown={props.onPointerDown}
     >
       {replyBandStyle ? (
         <div
@@ -222,6 +256,15 @@ export function TimelineCard(props: TimelineCardProps) {
           </div>
           <p className="timeline-reply-preview-text">
             {replyTargetPreviewContent}
+          </p>
+        </div>
+      ) : replyTargetPreviewPlaceholderLabel && replyTargetPreviewPlaceholderText ? (
+        <div className="timeline-reply-preview timeline-reply-preview-placeholder">
+          <div className="muted timeline-reply-preview-label">
+            {replyTargetPreviewPlaceholderLabel}
+          </div>
+          <p className="timeline-reply-preview-text">
+            {replyTargetPreviewPlaceholderText}
           </p>
         </div>
       ) : null}
@@ -353,7 +396,7 @@ export function TimelineCard(props: TimelineCardProps) {
           <span className="timeline-meta-separator" aria-hidden="true"> </span>
           <span className="timeline-meta-time">{createdAtParts.time}</span>
         </time>
-        {props.developerModeEnabled ? (
+        {props.developerModeEnabled && !props.physicsMode ? (
           <div ref={debugMenuRef} className="timeline-debug-menu-wrap">
             <button
               type="button"
@@ -516,6 +559,18 @@ function formatReplyTargetPreviewContent(item: TimelineItem) {
   }
 
   return normalized.slice(0, 140);
+}
+
+function formatReplyPreviewPlaceholderText(
+  status: "hit" | "pending" | "missing" | null,
+) {
+  switch (status) {
+    case "missing":
+      return "返信先ポストはまだ取得できていません";
+
+    default:
+      return null;
+  }
 }
 
 function isCoarsePointerDevice() {

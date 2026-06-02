@@ -77,6 +77,62 @@ export function encodeNevent(eventIdHex: string) {
   return bech32Encode("nevent", words);
 }
 
+export function decodeNevent(value: string) {
+  const decoded = bech32Decode(value, "nevent");
+
+  if (!decoded || decoded.hrp !== "nevent") {
+    return null;
+  }
+
+  const bytes = convertBits(new Uint8Array(decoded.data), 5, 8, false);
+
+  if (!bytes) {
+    return null;
+  }
+
+  let eventId: string | null = null;
+  let authorPubkey: string | null = null;
+  const relayUrls: string[] = [];
+  let offset = 0;
+
+  while (offset + 2 <= bytes.length) {
+    const type = bytes[offset];
+    const length = bytes[offset + 1];
+    const valueStart = offset + 2;
+    const valueEnd = valueStart + length;
+
+    if (valueEnd > bytes.length) {
+      return null;
+    }
+
+    const entryBytes = Uint8Array.from(bytes.slice(valueStart, valueEnd));
+
+    if (type === 0 && entryBytes.length === 32) {
+      eventId = bytesToHex(entryBytes);
+    } else if (type === 1 && entryBytes.length > 0) {
+      const relayUrl = decodeUtf8(entryBytes).trim();
+
+      if (relayUrl.length > 0) {
+        relayUrls.push(relayUrl);
+      }
+    } else if (type === 2 && entryBytes.length === 32) {
+      authorPubkey = bytesToHex(entryBytes);
+    }
+
+    offset = valueEnd;
+  }
+
+  if (!eventId) {
+    return null;
+  }
+
+  return {
+    eventId,
+    relayUrls,
+    authorPubkey,
+  };
+}
+
 function encodeTlv(
   entries: Array<{
     type: number;
@@ -118,6 +174,10 @@ function hexToBytes(hex: string) {
   }
 
   return bytes;
+}
+
+function decodeUtf8(bytes: Uint8Array) {
+  return new TextDecoder().decode(bytes);
 }
 
 function convertBits(

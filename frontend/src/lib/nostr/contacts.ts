@@ -268,7 +268,7 @@ async function fetchRecentEventsByAuthors(
   return mergeAndLimitEvents(settled, limit);
 }
 
-async function fetchRecentEventsByIds(
+export async function fetchRecentEventsByIds(
   relayUrls: string[],
   ids: string[],
   kinds: number[],

@@ -376,31 +376,18 @@ function findReplyTargetRelayHints(event: NostrEvent) {
     relayHints.push(normalized);
   };
 
-  for (const tag of event.tags) {
-    if (tag[0] !== "e") {
-      continue;
-    }
+  const replyTargetTag = findReplyTargetEventTag(event);
+  const rootTag = findRootEventTag(event);
 
-    if (tag[3] === "reply") {
-      pushRelayHint(tag[2]);
-    }
+  if (replyTargetTag) {
+    pushRelayHint(replyTargetTag[2]);
   }
 
-  for (const tag of event.tags) {
-    if (tag[0] !== "e") {
-      continue;
-    }
-
-    if (tag[3] === "root") {
-      pushRelayHint(tag[2]);
-    }
+  if (rootTag && rootTag !== replyTargetTag) {
+    pushRelayHint(rootTag[2]);
   }
 
-  for (const tag of event.tags) {
-    if (tag[0] !== "e") {
-      continue;
-    }
-
+  for (const tag of listEventReferenceTags(event)) {
     pushRelayHint(tag[2]);
   }
 
@@ -422,10 +409,10 @@ function findReplyTargetPubkey(
 ) {
   const selfPubkey = normalizeHexPubkey(event.pubkey);
   const preferredReplyPTargetPubkey = findPreferredReplyPTargetPubkey(event);
-  const replyTag = findReplyEventTag(event);
+  const replyTargetTag = findReplyTargetEventTag(event);
 
-  if (replyTag) {
-    const replyTargetPubkey = normalizeTaggedPubkey(replyTag[4]);
+  if (replyTargetTag) {
+    const replyTargetPubkey = normalizeTaggedPubkey(replyTargetTag[4]);
 
     if (
       replyTargetPubkey
@@ -434,8 +421,8 @@ function findReplyTargetPubkey(
       return replyTargetPubkey;
     }
 
-    if (replyTag[1]) {
-      const referencedItem = referenceById.get(replyTag[1]);
+    if (replyTargetTag[1]) {
+      const referencedItem = referenceById.get(replyTargetTag[1]);
 
       if (referencedItem?.pubkey && referencedItem.pubkey !== selfPubkey) {
         return referencedItem.pubkey;
@@ -450,47 +437,8 @@ function findReplyTargetPubkey(
       return replyTargetPubkey;
     }
 
-    if (replyTag[1]) {
-      const referencedItem = referenceById.get(replyTag[1]);
-
-      if (referencedItem) {
-        return referencedItem.pubkey;
-      }
-    }
-  }
-
-  const rootTag = event.tags.find((tag) =>
-    tag[0] === "e" && tag[3] === "root",
-  );
-
-  if (rootTag) {
-    const rootTargetPubkey = normalizeTaggedPubkey(rootTag[4]);
-
-    if (
-      rootTargetPubkey
-      && rootTargetPubkey !== selfPubkey
-    ) {
-      return rootTargetPubkey;
-    }
-
-    if (rootTag[1]) {
-      const referencedItem = referenceById.get(rootTag[1]);
-
-      if (referencedItem?.pubkey && referencedItem.pubkey !== selfPubkey) {
-        return referencedItem.pubkey;
-      }
-    }
-
-    if (preferredReplyPTargetPubkey) {
-      return preferredReplyPTargetPubkey;
-    }
-
-    if (rootTargetPubkey) {
-      return rootTargetPubkey;
-    }
-
-    if (rootTag[1]) {
-      const referencedItem = referenceById.get(rootTag[1]);
+    if (replyTargetTag[1]) {
+      const referencedItem = referenceById.get(replyTargetTag[1]);
 
       if (referencedItem) {
         return referencedItem.pubkey;
@@ -512,23 +460,7 @@ function findReplyTargetPubkey(
 }
 
 function findReplyTargetEventId(event: NostrEvent) {
-  const replyTag = findReplyEventTag(event);
-
-  if (replyTag?.[1]) {
-    return replyTag[1];
-  }
-
-  const rootTag = event.tags.find((tag) =>
-    tag[0] === "e" && tag[3] === "root",
-  );
-
-  if (rootTag?.[1]) {
-    return rootTag[1];
-  }
-
-  const firstEventTag = event.tags.find((tag) => tag[0] === "e" && tag[1]);
-
-  return firstEventTag?.[1] ?? null;
+  return findReplyTargetEventTag(event)?.[1] ?? null;
 }
 
 function findReplyContextPubkeys(
@@ -564,6 +496,40 @@ function findReplyEventTag(event: NostrEvent) {
   return event.tags.find((tag) =>
     tag[0] === "e" && tag[3] === "reply",
   );
+}
+
+function findRootEventTag(event: NostrEvent) {
+  return event.tags.find((tag) =>
+    tag[0] === "e" && tag[3] === "root",
+  );
+}
+
+function listEventReferenceTags(event: NostrEvent) {
+  return event.tags.filter((tag) => tag[0] === "e" && tag[1]);
+}
+
+function findPositionalReplyEventTag(event: NostrEvent) {
+  const eventReferenceTags = listEventReferenceTags(event);
+
+  if (eventReferenceTags.length === 0) {
+    return null;
+  }
+
+  if (eventReferenceTags.length === 1) {
+    return eventReferenceTags[0];
+  }
+
+  if (eventReferenceTags.length === 2) {
+    return eventReferenceTags[1];
+  }
+
+  return eventReferenceTags.at(-1) ?? null;
+}
+
+function findReplyTargetEventTag(event: NostrEvent) {
+  return findReplyEventTag(event)
+    ?? findRootEventTag(event)
+    ?? findPositionalReplyEventTag(event);
 }
 
 function normalizeTaggedPubkey(value: string | undefined) {

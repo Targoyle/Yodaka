@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -13,11 +14,10 @@ import {
 } from "../lib/nostr/cache";
 import { normalizeRelayUrls } from "../lib/nostr/contacts";
 import { encodeNevent } from "../lib/nostr/nip19";
-import type { NostrEvent } from "../lib/nostr/relay";
+import { resolveFocusedEventRouteFromLocation } from "../lib/nostr/eventRoute";
 import {
   buildTimelineEmptyMessage,
   buildVisibleTimeline,
-  timelineItemsEqual,
 } from "../lib/nostr/timelinePresentation";
 import { moveRelaySettings } from "../lib/nostr/relaySettings";
 import {
@@ -64,29 +64,14 @@ import { useReactionTimeline } from "../hooks/useReactionTimeline";
 import { usePublish } from "../hooks/usePublish";
 import { useRelayBootstrap } from "../hooks/useRelayBootstrap";
 import { useKeyMinerPanel } from "../hooks/useKeyMinerPanel";
+import { useReplyPreviewCache } from "../hooks/useReplyPreviewCache";
+import { useFocusedEventRoute } from "../hooks/useFocusedEventRoute";
 import { loginWithNsec } from "../lib/wasm/client";
 import { createTemporaryRelayTransport } from "../lib/nostr/temporaryRelayTransport";
-import {
-  fetchLatestEventByIdAcrossRelays,
-  fetchLatestEventByIdViaAuthorRelays,
-  formatDebugEventJson,
-} from "../lib/nostr/eventDebug";
+import { fetchLatestEventByIdAcrossRelays, formatDebugEventJson } from "../lib/nostr/eventDebug";
 import type { TimelineItem } from "../lib/wasm/client";
 
 const TIMELINE_LIMIT = 50;
-
-type ReplyPreviewCacheEntry =
-  | {
-      status: "hit";
-      item: TimelineItem;
-    }
-  | {
-      status: "pending";
-    }
-  | {
-      status: "missing";
-      retryAt: number;
-    };
 
 export function App() {
   const [relaySettings, setRelaySettings] = useState<RelaySetting[]>(() =>
@@ -98,6 +83,7 @@ export function App() {
   const [developerModeEnabled, setDeveloperModeEnabled] = useState(() =>
     loadDeveloperModeEnabled(),
   );
+  const [physicsEnabled, setPhysicsEnabled] = useState(false);
   const [accountTabEnabled, setAccountTabEnabled] = useState(() =>
     loadAccountTabEnabled(),
   );
@@ -120,6 +106,7 @@ export function App() {
     settingsMenuRef,
   });
   const initialManualPubkey = useRef(loadManualPubkey()).current;
+  const initialFocusedEventRoute = useRef(resolveFocusedEventRouteFromLocation()).current;
   const {
     activeSignerKind,
     adoptNip07SignerPubkey,
@@ -154,12 +141,8 @@ export function App() {
     title: "",
     jsonText: "",
   });
-  const [replyPreviewCache, setReplyPreviewCache] = useState<
-    Record<string, ReplyPreviewCacheEntry>
-  >({});
-  const [replyPreviewRetryClock, setReplyPreviewRetryClock] = useState(0);
   const [timelineView, setTimelineView] = useState<TimelineView>(() =>
-    initialManualPubkey ? "follow" : "relay",
+    initialFocusedEventRoute ? "relay" : initialManualPubkey ? "follow" : "relay",
   );
   const {
     closeManualPubkeyDialog,
@@ -230,13 +213,10 @@ export function App() {
   const debugRelayTransport = createTemporaryRelayTransport(
     () => relayCoordinatorRef.current,
   );
-  const replyPreviewItems = useMemo(
-    () =>
-      Object.values(replyPreviewCache).flatMap((entry) => (
-        entry.status === "hit" ? [entry.item] : []
-      )),
-    [replyPreviewCache],
-  );
+  const focusRelayView = useCallback(() => {
+    hasAutoSwitchedToFollowRef.current = true;
+    setTimelineView("relay");
+  }, []);
 
   const {
     clearFollowError,
@@ -501,7 +481,16 @@ export function App() {
     const enabled = event.target.checked;
 
     setDeveloperModeEnabled(enabled);
+    if (!enabled) {
+      setPhysicsEnabled(false);
+    }
     saveDeveloperModeEnabled(enabled);
+  }
+
+  function handlePhysicsToggle(event: ChangeEvent<HTMLInputElement>) {
+    const enabled = event.target.checked;
+
+    setPhysicsEnabled(enabled);
   }
 
   function handleAccountTabToggle(event: ChangeEvent<HTMLInputElement>) {
@@ -760,6 +749,10 @@ export function App() {
   async function handleTimelineViewChange(view: TimelineView) {
     hasAutoSwitchedToFollowRef.current = true;
 
+    if (focusedEventRoute) {
+      clearFocusedEventRoute();
+    }
+
     if (view !== "relay" && !viewerPubkey && signerAvailable) {
       try {
         await requestSignerPubkeyFromUserGesture();
@@ -799,7 +792,7 @@ export function App() {
     }
   }
 
-  const visibleTimeline = buildVisibleTimeline({
+  const baseVisibleTimeline = buildVisibleTimeline({
     accountTimeline,
     followTimeline,
     notifyTimeline,
@@ -810,227 +803,80 @@ export function App() {
     timelineLimit: TIMELINE_LIMIT,
     timelineView,
   });
-  const timelineReferenceItems = [
-    ...timeline,
-    ...followTimeline,
-    ...accountTimeline,
-    ...notifyTimeline,
-    ...reactionTimeline,
-    ...replyPreviewItems,
-  ];
-
-  useEffect(() => {
-    const referenceById = new Map(timelineReferenceItems.map((item) => [item.id, item] as const));
-    const resolvedPreviewEntries = visibleTimeline
-      .map((item) => {
-        const targetEventId = item.replyTargetEventId;
-
-        if (!targetEventId) {
-          return null;
-        }
-
-        const targetItem = referenceById.get(targetEventId) ?? null;
-
-        if (!targetItem || targetItem.id === item.id) {
-          return null;
-        }
-
-        return {
-          eventId: targetEventId,
-          item: targetItem,
-        };
-      })
-      .filter((entry): entry is { eventId: string; item: TimelineItem } => entry !== null);
-
-    if (resolvedPreviewEntries.length === 0) {
-      return;
-    }
-
-    setReplyPreviewCache((current) => {
-      let changed = false;
-      const next = { ...current };
-
-      for (const entry of resolvedPreviewEntries) {
-        const existingEntry = current[entry.eventId];
-
-        if (
-          existingEntry?.status === "hit"
-          && timelineItemsEqual([existingEntry.item], [entry.item])
-        ) {
-          continue;
-        }
-
-        next[entry.eventId] = {
-          status: "hit",
-          item: entry.item,
-        };
-        changed = true;
-      }
-
-      return changed ? next : current;
-    });
-  }, [timelineReferenceItems, visibleTimeline]);
-
-  useEffect(() => {
-    if (readyReadRelayCount <= 0 || readRelayUrls.length === 0) {
-      return;
-    }
-
-    const referenceItemIds = new Set(timelineReferenceItems.map((item) => item.id));
-    const now = Date.now();
-    const missingReplyTargetIds = [...new Set(
-      visibleTimeline
-        .map((item) => item.replyTargetEventId)
-        .filter((eventId): eventId is string => (
-          typeof eventId === "string"
-          && eventId.length > 0
-          && !referenceItemIds.has(eventId)
-          && (
-            !replyPreviewCache[eventId]
-            || (
-              replyPreviewCache[eventId]?.status === "missing"
-              && replyPreviewCache[eventId].retryAt <= now
-            )
-          )
-        )),
-    )];
-
-    if (missingReplyTargetIds.length === 0) {
-      return;
-    }
-
-    setReplyPreviewCache((current) => {
-      let changed = false;
-      const next = { ...current };
-
-      for (const eventId of missingReplyTargetIds) {
-        if (current[eventId]?.status === "pending") {
-          continue;
-        }
-
-        next[eventId] = { status: "pending" };
-        changed = true;
-      }
-
-      return changed ? next : current;
-    });
-
-    let cancelled = false;
-
-    void (async () => {
-      const settled = await Promise.all(
-        missingReplyTargetIds.map(async (eventId) => {
-          const sourceItem = visibleTimeline.find(
-            (item) => item.replyTargetEventId === eventId,
-          );
-          const isRelayTimeline = timelineView === "relay";
-
-          return {
-            eventId,
-            event: isRelayTimeline
-              ? await fetchLatestEventByIdAcrossRelays(
-                readRelayUrls,
-                eventId,
-                debugRelayTransport,
-              )
-              : await fetchLatestEventByIdViaAuthorRelays({
-                authorPubkey: sourceItem?.replyTargetPubkey,
-                baseRelayUrls: [
-                  ...readRelayUrls,
-                  ...(sourceItem?.replyTargetRelayHints ?? []),
-                ],
-                eventId,
-                transport: debugRelayTransport,
-                options: { allowDirectFallback: true },
-              }),
-          };
-        }),
-      );
-
-      if (cancelled) {
-        return;
-      }
-
-      setReplyPreviewCache((current) => {
-        let changed = false;
-        const next = { ...current };
-        const retryAt = Date.now() + 1_500;
-
-        for (const entry of settled) {
-          const event = entry.event;
-
-          if (event) {
-            next[entry.eventId] = {
-              status: "hit",
-              item: buildReplyPreviewTimelineItem(
-                event,
-                profileSummariesRef.current.get(event.pubkey) ?? null,
-              ),
-            };
-          } else {
-            next[entry.eventId] = {
-              status: "missing",
-              retryAt,
-            };
-          }
-          changed = true;
-        }
-
-        return changed ? next : current;
-      });
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    debugRelayTransport,
+  const baseTimelineSourceItems = useMemo(
+    () => [
+      ...timeline,
+      ...followTimeline,
+      ...accountTimeline,
+      ...notifyTimeline,
+      ...reactionTimeline,
+    ],
+    [accountTimeline, followTimeline, notifyTimeline, reactionTimeline, timeline],
+  );
+  const baseTimelineSourceItemsById = useMemo(
+    () => new Map(baseTimelineSourceItems.map((item) => [item.id, item] as const)),
+    [baseTimelineSourceItems],
+  );
+  const {
+    clearFocusedEventRoute,
+    focusedEventDisplayItem,
+    focusedEventFetchError,
+    focusedEventFetchState,
+    focusedEventRoute,
+  } = useFocusedEventRoute({
+    initialFocusedEventRoute,
+    onEnterFocusedRelayView: focusRelayView,
+    profileSummariesRef,
+    queueProfileLookupRef,
+    readRelayUrls,
+    readyReadRelayCount,
+    referenceItems: baseTimelineSourceItems,
+    referenceItemsById: baseTimelineSourceItemsById,
+    timelineView,
+    transport: debugRelayTransport,
+  });
+  const previewVisibleTimeline = useMemo(
+    () => (
+      focusedEventRoute
+        ? (focusedEventDisplayItem ? [focusedEventDisplayItem] : [])
+        : baseVisibleTimeline
+    ),
+    [baseVisibleTimeline, focusedEventDisplayItem, focusedEventRoute],
+  );
+  const replyPreviewReferenceItems = useMemo(
+    () => (
+      focusedEventDisplayItem
+        ? [...baseTimelineSourceItems, focusedEventDisplayItem]
+        : baseTimelineSourceItems
+    ),
+    [baseTimelineSourceItems, focusedEventDisplayItem],
+  );
+  const {
+    replyPreviewItems,
+    replyPreviewStatuses,
+  } = useReplyPreviewCache({
     profileSummariesRef,
     readRelayUrls,
     readyReadRelayCount,
-    replyPreviewCache,
-    replyPreviewRetryClock,
+    referenceItems: replyPreviewReferenceItems,
     timelineView,
-    timelineReferenceItems,
-    visibleTimeline,
-  ]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
+    transport: debugRelayTransport,
+    visibleTimeline: previewVisibleTimeline,
+  });
+  const baseTimelineReferenceItems = useMemo(
+    () => [...replyPreviewReferenceItems, ...replyPreviewItems],
+    [replyPreviewItems, replyPreviewReferenceItems],
+  );
+  const timelineReferenceItems = useMemo(() => {
+    if (!focusedEventDisplayItem) {
+      return baseTimelineReferenceItems;
     }
 
-    const referenceItemIds = new Set(timelineReferenceItems.map((item) => item.id));
-    let nextRetryAt = Number.POSITIVE_INFINITY;
-
-    for (const item of visibleTimeline) {
-      const eventId = item.replyTargetEventId;
-
-      if (!eventId || referenceItemIds.has(eventId)) {
-        continue;
-      }
-
-      const entry = replyPreviewCache[eventId];
-
-      if (entry?.status !== "missing") {
-        continue;
-      }
-
-      nextRetryAt = Math.min(nextRetryAt, entry.retryAt);
-    }
-
-    if (!Number.isFinite(nextRetryAt)) {
-      return;
-    }
-
-    const timeoutId = window.setTimeout(() => {
-      setReplyPreviewRetryClock(Date.now());
-    }, Math.max(0, nextRetryAt - Date.now()));
-
-    return () => {
-      window.clearTimeout(timeoutId);
-    };
-  }, [replyPreviewCache, timelineReferenceItems, visibleTimeline]);
+    return baseTimelineReferenceItems.some((item) => item.id === focusedEventDisplayItem.id)
+      ? baseTimelineReferenceItems
+      : [...baseTimelineReferenceItems, focusedEventDisplayItem];
+  }, [baseTimelineReferenceItems, focusedEventDisplayItem]);
+  const visibleTimeline = previewVisibleTimeline;
   const relayButtonTitle = buildRelayButtonTitle(activeRelayUrls, relayStatus);
   const readyWriteRelayCount = countReadyWriteRelays();
   const canSendReaction = canSignEvents;
@@ -1043,22 +889,27 @@ export function App() {
     : runtimeComposerError || runtimeComposerMessage
       ? null
       : composerWelcomeMessage;
-  const timelineEmptyMessage = buildTimelineEmptyMessage(
-    timelineView,
-    followLoadState,
-    accountLoadState,
-    notifyLoadState,
-    reactionLoadState,
-    timelineView === "follow" ? visibleTimeline.length : followTimeline.length,
-    timelineView === "notify" ? visibleTimeline.length : notifyTimeline.length,
-    timelineView === "reaction" ? visibleTimeline.length : reactionTimeline.length,
-    accountError,
-    followError,
-    notifyError,
-    reactionError,
-  );
-  const activeTimelineDiagnostics =
-    timelineView === "follow"
+  const timelineEmptyMessage = focusedEventRoute
+    ? focusedEventFetchState === "loading"
+      ? "ポストを取得中..."
+      : focusedEventFetchError ?? "ポストが見つかりません"
+    : buildTimelineEmptyMessage(
+      timelineView,
+      followLoadState,
+      accountLoadState,
+      notifyLoadState,
+      reactionLoadState,
+      timelineView === "follow" ? visibleTimeline.length : followTimeline.length,
+      timelineView === "notify" ? visibleTimeline.length : notifyTimeline.length,
+      timelineView === "reaction" ? visibleTimeline.length : reactionTimeline.length,
+      accountError,
+      followError,
+      notifyError,
+      reactionError,
+    );
+  const activeTimelineDiagnostics = focusedEventRoute
+    ? []
+    : timelineView === "follow"
       ? [followDiagnostic, accountDiagnostic]
       : timelineView === "account"
         ? [accountDiagnostic]
@@ -1078,6 +929,7 @@ export function App() {
         keyMinerOpen={keyMinerOpen}
         manualPubkey={manualPubkey}
         notifyTabEnabled={notifyTabEnabled}
+        physicsEnabled={physicsEnabled}
         profileImagesEnabled={profileImagesEnabled}
         reactionTabEnabled={reactionTabEnabled}
         relayBootstrapDeferred={relayBootstrapDeferred}
@@ -1096,6 +948,7 @@ export function App() {
         onDeveloperModeToggle={handleDeveloperModeToggle}
         onKeyMinerToggle={handleKeyMinerToggle}
         onNotifyTabToggle={handleNotifyTabToggle}
+        onPhysicsToggle={handlePhysicsToggle}
         onProfileImagesToggle={handleProfileImagesToggle}
         onReactionTabToggle={handleReactionTabToggle}
         onRelayAdd={handleRelayAdd}
@@ -1143,15 +996,19 @@ export function App() {
           canSendReaction={canSendReaction}
           developerModeEnabled={developerModeEnabled}
           emptyMessage={timelineEmptyMessage}
+          focusedEventMode={Boolean(focusedEventRoute)}
           isProfileImageEnabled={profileImagesEnabled}
           isPublishing={isPublishing}
           notifyTabEnabled={notifyTabEnabled}
+          physicsEnabled={physicsEnabled}
           onCopyEventId={handleCopyEventId}
           pendingReactionEventIds={pendingReactionEventIds}
           readyWriteRelayCount={readyWriteRelayCount}
           reactionTabEnabled={reactionTabEnabled}
           relayButtonTitle={relayButtonTitle}
+          replyPreviewStatuses={replyPreviewStatuses}
           timelineDiagnostics={activeTimelineDiagnostics}
+          timelineHeadingLabel={focusedEventRoute ? "Post" : "Timeline"}
           timelineReferenceItems={timelineReferenceItems}
           timelineView={timelineView}
           onReact={handleReaction}
@@ -1202,28 +1059,4 @@ export function App() {
       />
     </main>
   );
-}
-
-function buildReplyPreviewTimelineItem(
-  event: NostrEvent,
-  profile: TimelineItem["profile"],
-): TimelineItem {
-  return {
-    id: event.id,
-    pubkey: event.pubkey,
-    createdAt: event.created_at,
-    kind: event.kind,
-    content: event.content,
-    isReply: false,
-    replyTargetEventId: null,
-    replyTargetPubkey: null,
-    replyTargetRelayHints: [],
-    replyTargetProfile: null,
-    replyContextPubkeys: [],
-    likeCount: 0,
-    kusaCount: 0,
-    moreReactionCount: 0,
-    otherReactionSummaries: [],
-    profile,
-  };
 }

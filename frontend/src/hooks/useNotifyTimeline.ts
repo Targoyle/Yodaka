@@ -191,6 +191,25 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
   ]);
 
   useEffect(() => {
+    if (
+      args.relayBootstrapDeferred
+      || !shouldPrefetchNotify
+      || args.timelineView === "notify"
+      || notifyLoadState !== "idle"
+    ) {
+      return;
+    }
+
+    setNotifyLoadState("loading");
+    setRefreshRevision((current) => current + 1);
+  }, [
+    args.relayBootstrapDeferred,
+    args.timelineView,
+    notifyLoadState,
+    shouldPrefetchNotify,
+  ]);
+
+  useEffect(() => {
     if (args.relayBootstrapDeferred) {
       return;
     }

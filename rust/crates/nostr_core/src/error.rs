@@ -7,6 +7,8 @@ pub enum CoreError {
     InvalidEventJson(#[source] serde_json::Error),
     #[error("tags json could not be parsed")]
     InvalidTagsJson(#[source] serde_json::Error),
+    #[error("physics bodies json could not be parsed")]
+    InvalidPhysicsBodiesJson(#[source] serde_json::Error),
     #[error("secret key could not be parsed")]
     InvalidSecretKey,
     #[error("unsigned event json could not be parsed")]
@@ -59,6 +61,7 @@ impl CoreError {
         match self {
             Self::InvalidEventJson(_) => "invalid_event_json",
             Self::InvalidTagsJson(_) => "invalid_tags_json",
+            Self::InvalidPhysicsBodiesJson(_) => "invalid_physics_bodies_json",
             Self::InvalidSecretKey => "invalid_secret_key",
             Self::InvalidUnsignedEventJson => "invalid_unsigned_event_json",
             Self::InvalidUnsignedEvent => "invalid_unsigned_event",

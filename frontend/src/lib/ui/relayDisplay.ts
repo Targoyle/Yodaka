@@ -18,25 +18,15 @@ import {
 export function formatRelayStatus(status: RelayCoordinatorStatus) {
   switch (status.phase) {
     case "idle":
-      return "🟡 IDLE";
-
     case "paused":
-      return "🟡 PAUSED";
-
     case "connecting":
-      return "🟡 CONNECTING";
-
     case "subscribing":
-      return "🟡 SYNCING";
-
     case "partial":
-      return "🟡 PARTIAL";
+    case "degraded":
+      return "🟡 WAIT";
 
     case "live":
       return "🟢 LIVE";
-
-    case "degraded":
-      return "🟡 DEGRADED";
 
     case "offline":
       return "🔴 OFFLINE";

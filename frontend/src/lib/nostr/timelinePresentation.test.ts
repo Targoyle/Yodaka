@@ -219,6 +219,103 @@ describe("buildAuxiliaryTimeline", () => {
     expect(replyItem?.replyContextPubkeys).toEqual([rootPubkey]);
   });
 
+  it("treats a single positional e-tag as the reply target", () => {
+    const replyTargetPubkey = "f".repeat(64);
+    const replyEvent: NostrEvent = {
+      id: "reply-id",
+      pubkey: "a".repeat(64),
+      created_at: 2,
+      kind: 1,
+      tags: [
+        ["e", "target-id", "wss://relay.example/", "", replyTargetPubkey],
+        ["p", replyTargetPubkey],
+      ],
+      content: "reply",
+      sig: "sig",
+    };
+
+    const [replyItem] = buildAuxiliaryTimeline({
+      events: [replyEvent],
+      profileSummaries: new Map(),
+      referenceItems: [],
+      timelineLimit: 20,
+    });
+
+    expect(replyItem?.replyTargetEventId).toBe("target-id");
+    expect(replyItem?.replyTargetPubkey).toBe(replyTargetPubkey);
+    expect(replyItem?.replyTargetRelayHints).toEqual(["wss://relay.example/"]);
+  });
+
+  it("treats the second positional e-tag as the direct reply target", () => {
+    const rootPubkey = "b".repeat(64);
+    const replyPubkey = "c".repeat(64);
+    const replyEvent: NostrEvent = {
+      id: "reply-id",
+      pubkey: "a".repeat(64),
+      created_at: 2,
+      kind: 1,
+      tags: [
+        ["e", "root-id", "wss://root.example/", "", rootPubkey],
+        ["e", "reply-id-2", "wss://reply.example/", "", replyPubkey],
+        ["p", rootPubkey],
+        ["p", replyPubkey],
+      ],
+      content: "reply",
+      sig: "sig",
+    };
+
+    const [replyItem] = buildAuxiliaryTimeline({
+      events: [replyEvent],
+      profileSummaries: new Map(),
+      referenceItems: [],
+      timelineLimit: 20,
+    });
+
+    expect(replyItem?.replyTargetEventId).toBe("reply-id-2");
+    expect(replyItem?.replyTargetPubkey).toBe(replyPubkey);
+    expect(replyItem?.replyTargetRelayHints).toEqual([
+      "wss://reply.example/",
+      "wss://root.example/",
+    ]);
+  });
+
+  it("treats the last positional e-tag as the direct reply target when three or more exist", () => {
+    const rootPubkey = "b".repeat(64);
+    const mentionPubkey = "c".repeat(64);
+    const replyPubkey = "d".repeat(64);
+    const replyEvent: NostrEvent = {
+      id: "reply-id",
+      pubkey: "a".repeat(64),
+      created_at: 2,
+      kind: 1,
+      tags: [
+        ["e", "root-id", "wss://root.example/", "", rootPubkey],
+        ["e", "mention-id", "wss://mention.example/", "", mentionPubkey],
+        ["e", "reply-id-3", "wss://reply.example/", "", replyPubkey],
+        ["p", rootPubkey],
+        ["p", mentionPubkey],
+        ["p", replyPubkey],
+      ],
+      content: "reply",
+      sig: "sig",
+    };
+
+    const [replyItem] = buildAuxiliaryTimeline({
+      events: [replyEvent],
+      profileSummaries: new Map(),
+      referenceItems: [],
+      timelineLimit: 20,
+    });
+
+    expect(replyItem?.replyTargetEventId).toBe("reply-id-3");
+    expect(replyItem?.replyTargetPubkey).toBe(replyPubkey);
+    expect(replyItem?.replyTargetRelayHints).toEqual([
+      "wss://reply.example/",
+      "wss://root.example/",
+      "wss://mention.example/",
+    ]);
+  });
+
   it("preserves reply context when merging with relay snapshot items", () => {
     const currentItem: TimelineItem = {
       id: "reply-id",

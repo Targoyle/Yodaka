@@ -30,6 +30,7 @@ type AppToolbarProps = {
   keyMinerOpen: boolean;
   manualPubkey: string | null;
   notifyTabEnabled: boolean;
+  physicsEnabled: boolean;
   profileImagesEnabled: boolean;
   reactionTabEnabled: boolean;
   relayBootstrapDeferred: boolean;
@@ -48,6 +49,7 @@ type AppToolbarProps = {
   onDeveloperModeToggle: ChangeEventHandler<HTMLInputElement>;
   onKeyMinerToggle: () => void;
   onNotifyTabToggle: ChangeEventHandler<HTMLInputElement>;
+  onPhysicsToggle: ChangeEventHandler<HTMLInputElement>;
   onProfileImagesToggle: ChangeEventHandler<HTMLInputElement>;
   onReactionTabToggle: ChangeEventHandler<HTMLInputElement>;
   onRelayAdd: FormEventHandler<HTMLFormElement>;
@@ -126,6 +128,7 @@ export function AppToolbar(props: AppToolbarProps) {
             developerModeEnabled={props.developerModeEnabled}
             keyMinerOpen={props.keyMinerOpen}
             notifyTabEnabled={props.notifyTabEnabled}
+            physicsEnabled={props.physicsEnabled}
             profileImagesEnabled={props.profileImagesEnabled}
             reactionTabEnabled={props.reactionTabEnabled}
             relayBootstrapDeferred={props.relayBootstrapDeferred}
@@ -140,6 +143,7 @@ export function AppToolbar(props: AppToolbarProps) {
             onDeveloperModeToggle={props.onDeveloperModeToggle}
             onKeyMinerToggle={props.onKeyMinerToggle}
             onNotifyTabToggle={props.onNotifyTabToggle}
+            onPhysicsToggle={props.onPhysicsToggle}
             onProfileImagesToggle={props.onProfileImagesToggle}
             onReactionTabToggle={props.onReactionTabToggle}
             onRelayAdd={props.onRelayAdd}
