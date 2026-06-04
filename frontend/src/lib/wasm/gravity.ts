@@ -1,5 +1,4 @@
-import { initializeWasm } from "./client";
-import { GravityWorld as WasmGravityWorld } from "@wasm/nostr_wasm.js";
+import init, { GravityWorld as WasmGravityWorld } from "@physics-wasm/nostr_physics_wasm.js";
 
 export type GravityBodySeed = {
   x: number;
@@ -11,11 +10,21 @@ export type GravityBodySeed = {
 
 export type GravityBodySnapshot = GravityBodySeed;
 
+let initializePromise: ReturnType<typeof init> | null = null;
+
+export async function initializePhysicsWasm() {
+  if (!initializePromise) {
+    initializePromise = init();
+  }
+
+  return initializePromise;
+}
+
 export class GravityWorld {
   private constructor(private readonly inner: WasmGravityWorld) {}
 
   static async create(width: number, height: number) {
-    await initializeWasm();
+    await initializePhysicsWasm();
     return new GravityWorld(new WasmGravityWorld(width, height));
   }
 

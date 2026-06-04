@@ -1,4 +1,6 @@
 import {
+  Suspense,
+  lazy,
   useCallback,
   useEffect,
   useMemo,
@@ -48,11 +50,8 @@ import {
   buildRelayButtonTitle,
 } from "../lib/ui/relayDisplay";
 import { pickComposerWelcomeMessage } from "../lib/ui/composerMessages";
-import { KeyMinerPanel } from "../components/KeyMinerPanel";
 import { ComposerPanel } from "../components/ComposerPanel";
-import { EventJsonDialog } from "../components/EventJsonDialog";
 import { ManualPubkeyDialog } from "../components/ManualPubkeyDialog";
-import { SignerDialog } from "../components/SignerDialog";
 import { TimelinePanel } from "../components/TimelinePanel";
 import { AppToolbar } from "../components/AppToolbar";
 import { useManualPubkeyDialog } from "../hooks/useManualPubkeyDialog";
@@ -64,6 +63,7 @@ import { useReactionTimeline } from "../hooks/useReactionTimeline";
 import { usePublish } from "../hooks/usePublish";
 import { useRelayBootstrap } from "../hooks/useRelayBootstrap";
 import { useKeyMinerPanel } from "../hooks/useKeyMinerPanel";
+import { useContentEventPreviewCache } from "../hooks/useContentEventPreviewCache";
 import { useReplyPreviewCache } from "../hooks/useReplyPreviewCache";
 import { useFocusedEventRoute } from "../hooks/useFocusedEventRoute";
 import { loginWithNsec } from "../lib/wasm/client";
@@ -72,6 +72,23 @@ import { fetchLatestEventByIdAcrossRelays, formatDebugEventJson } from "../lib/n
 import type { TimelineItem } from "../lib/wasm/client";
 
 const TIMELINE_LIMIT = 50;
+
+const loadKeyMinerPanel = () =>
+  import("../components/KeyMinerPanel").then((module) => ({
+    default: module.KeyMinerPanel,
+  }));
+const loadSignerDialog = () =>
+  import("../components/SignerDialog").then((module) => ({
+    default: module.SignerDialog,
+  }));
+const loadEventJsonDialog = () =>
+  import("../components/EventJsonDialog").then((module) => ({
+    default: module.EventJsonDialog,
+  }));
+
+const LazyKeyMinerPanel = lazy(loadKeyMinerPanel);
+const LazySignerDialog = lazy(loadSignerDialog);
+const LazyEventJsonDialog = lazy(loadEventJsonDialog);
 
 export function App() {
   const [relaySettings, setRelaySettings] = useState<RelaySetting[]>(() =>
@@ -93,6 +110,7 @@ export function App() {
   const [reactionTabEnabled, setReactionTabEnabled] = useState(() =>
     loadReactionTabEnabled(),
   );
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const settingsMenuRef = useRef<HTMLDetailsElement | null>(null);
   const [themePreference, setThemePreference] = useState<ThemePreference>(() =>
     loadThemePreference(),
@@ -253,6 +271,7 @@ export function App() {
     accountTimeline,
     clearAccountError,
     primeAccountLoad,
+    rememberLocalPublishedTextNote,
     resetAccountState,
   } = useAccountTimeline({
     autoSignerPromptBlocked,
@@ -335,36 +354,6 @@ export function App() {
     timelineView,
     viewerPubkey,
   });
-
-  const {
-    draftContent,
-    handleDraftContentChange,
-    handleDraftKeyDown,
-    handlePublish,
-    handleReaction,
-    isPublishing,
-    pendingReactionEventIds,
-    publishError,
-    publishMessage,
-  } = usePublish({
-    adoptNip07SignerPubkey,
-    applyRelayPublishDiagnostics,
-    countReadyWriteRelays,
-    createActiveSigner,
-    ensureSignerPubkey,
-    markSignerUnavailable,
-    queueProfileLookupRef,
-    refreshSnapshotRef,
-    relayCoordinatorRef,
-    requestSignerPubkeyFromUserGesture,
-    rememberLocalReactionTarget,
-    scheduleRefreshRef,
-    selectReactionRelayHint,
-    signerPubkey,
-    viewerPubkey,
-    writeRelayUrls,
-  });
-
   useEffect(() => {
     if (typeof window === "undefined") {
       return;
@@ -558,6 +547,7 @@ export function App() {
   }
 
   async function handleViewEventJson(item: TimelineItem) {
+    void loadEventJsonDialog();
     const title = `event ${item.id.slice(0, 12)}`;
     setEventJsonDialogState({
       isOpen: true,
@@ -685,8 +675,17 @@ export function App() {
   }
 
   function handleOpenSignerDialog() {
+    void loadSignerDialog();
     clearSignerRequestFeedback();
     setSignerDialogOpen(true);
+  }
+
+  function handleKeyMinerToggleClick() {
+    if (!keyMinerOpen) {
+      void loadKeyMinerPanel();
+    }
+
+    handleKeyMinerToggle();
   }
 
   function handleCloseSignerDialog() {
@@ -867,19 +866,78 @@ export function App() {
     () => [...replyPreviewReferenceItems, ...replyPreviewItems],
     [replyPreviewItems, replyPreviewReferenceItems],
   );
+  const {
+    contentEventPreviewItems,
+  } = useContentEventPreviewCache({
+    profileSummariesRef,
+    readRelayUrls,
+    referenceItems: baseTimelineReferenceItems,
+    transport: debugRelayTransport,
+    visibleTimeline: previewVisibleTimeline,
+  });
+  const baseTimelineReferenceItemsWithContent = useMemo(
+    () => [...baseTimelineReferenceItems, ...contentEventPreviewItems],
+    [baseTimelineReferenceItems, contentEventPreviewItems],
+  );
   const timelineReferenceItems = useMemo(() => {
     if (!focusedEventDisplayItem) {
-      return baseTimelineReferenceItems;
+      return baseTimelineReferenceItemsWithContent;
     }
 
-    return baseTimelineReferenceItems.some((item) => item.id === focusedEventDisplayItem.id)
-      ? baseTimelineReferenceItems
-      : [...baseTimelineReferenceItems, focusedEventDisplayItem];
-  }, [baseTimelineReferenceItems, focusedEventDisplayItem]);
+    return baseTimelineReferenceItemsWithContent.some(
+      (item) => item.id === focusedEventDisplayItem.id,
+    )
+      ? baseTimelineReferenceItemsWithContent
+      : [...baseTimelineReferenceItemsWithContent, focusedEventDisplayItem];
+  }, [baseTimelineReferenceItemsWithContent, focusedEventDisplayItem]);
+  const publishReferenceItemsById = useMemo(
+    () => new Map(timelineReferenceItems.map((item) => [item.id, item] as const)),
+    [timelineReferenceItems],
+  );
+  const {
+    beginReply,
+    cancelReply,
+    clearPublishFeedback,
+    draftContent,
+    handleDraftContentChange,
+    handleDraftKeyDown,
+    handlePublish,
+    handleReaction,
+    isPublishing,
+    pendingReactionEventIds,
+    publishError,
+    publishMessage,
+    replyTargetItem,
+  } = usePublish({
+    adoptNip07SignerPubkey,
+    applyRelayPublishDiagnostics,
+    countReadyWriteRelays,
+    createActiveSigner,
+    ensureSignerPubkey,
+    markSignerUnavailable,
+    queueProfileLookupRef,
+    rememberLocalPublishedTextNote,
+    referenceItemsById: publishReferenceItemsById,
+    refreshSnapshotRef,
+    relayCoordinatorRef,
+    requestSignerPubkeyFromUserGesture,
+    rememberLocalReactionTarget,
+    scheduleRefreshRef,
+    selectReactionRelayHint,
+    signerPubkey,
+    viewerPubkey,
+    writeRelayUrls,
+  });
   const visibleTimeline = previewVisibleTimeline;
   const relayButtonTitle = buildRelayButtonTitle(activeRelayUrls, relayStatus);
   const readyWriteRelayCount = countReadyWriteRelays();
+  const canComposeNotes = canSignEvents && Boolean(signerPubkey);
+  const canStartReply = canOpenPersonalTimeline;
   const canSendReaction = canSignEvents;
+  const handleComposerClearFeedback = useCallback(() => {
+    clearSignerRequestFeedback();
+    clearPublishFeedback();
+  }, [clearPublishFeedback, clearSignerRequestFeedback]);
   const runtimeComposerError = publishError ?? signerRequestError;
   const runtimeComposerMessage =
     runtimeComposerError ? null : publishMessage ?? signerRequestMessage;
@@ -919,6 +977,26 @@ export function App() {
             ? [reactionDiagnostic]
             : [];
 
+  useEffect(() => {
+    if (!replyTargetItem || !canComposeNotes) {
+      return;
+    }
+
+    composerTextareaRef.current?.focus();
+    composerTextareaRef.current?.scrollIntoView({
+      block: "nearest",
+    });
+  }, [canComposeNotes, replyTargetItem]);
+
+  function handleReply(item: TimelineItem) {
+    handleComposerClearFeedback();
+    beginReply(item);
+
+    if (!canComposeNotes) {
+      handleOpenSignerDialog();
+    }
+  }
+
   return (
     <main className="shell">
       <AppToolbar
@@ -946,7 +1024,7 @@ export function App() {
         onAccountTabToggle={handleAccountTabToggle}
         onClearLocalData={handleClearLocalData}
         onDeveloperModeToggle={handleDeveloperModeToggle}
-        onKeyMinerToggle={handleKeyMinerToggle}
+        onKeyMinerToggle={handleKeyMinerToggleClick}
         onNotifyTabToggle={handleNotifyTabToggle}
         onPhysicsToggle={handlePhysicsToggle}
         onProfileImagesToggle={handleProfileImagesToggle}
@@ -963,11 +1041,19 @@ export function App() {
       />
 
       {keyMinerOpen ? (
-        <KeyMinerPanel
-          developerModeEnabled={developerModeEnabled}
-          initialPrefix={keyMinerLaunchConfig.prefix}
-          initialSuffix={keyMinerLaunchConfig.suffix}
-        />
+        <Suspense
+          fallback={(
+            <section className="panel">
+              <p className="muted">Key miner を読み込んでいます...</p>
+            </section>
+          )}
+        >
+          <LazyKeyMinerPanel
+            developerModeEnabled={developerModeEnabled}
+            initialPrefix={keyMinerLaunchConfig.prefix}
+            initialSuffix={keyMinerLaunchConfig.suffix}
+          />
+        </Suspense>
       ) : (
         <>
           {errorMessage ? (
@@ -976,16 +1062,19 @@ export function App() {
             </section>
           ) : null}
 
-          {canSignEvents && signerPubkey ? (
+          {canComposeNotes ? (
             <ComposerPanel
               draftContent={draftContent}
               errorMessage={composerError}
               isPublishing={isPublishing}
               readyWriteRelayCount={readyWriteRelayCount}
+              replyTargetItem={replyTargetItem}
               statusMessage={composerMessage}
-              onClearFeedback={clearSignerRequestFeedback}
+              textareaRef={composerTextareaRef}
+              onClearFeedback={handleComposerClearFeedback}
               onDraftChange={handleDraftContentChange}
               onDraftKeyDown={handleDraftKeyDown}
+              onReplyCancel={cancelReply}
               onSubmit={handlePublish}
             />
           ) : null}
@@ -993,6 +1082,7 @@ export function App() {
         <TimelinePanel
           accountTabEnabled={accountTabEnabled}
           canOpenPersonalTimeline={canOpenPersonalTimeline}
+          canReply={canStartReply}
           canSendReaction={canSendReaction}
           developerModeEnabled={developerModeEnabled}
           emptyMessage={timelineEmptyMessage}
@@ -1002,6 +1092,7 @@ export function App() {
           notifyTabEnabled={notifyTabEnabled}
           physicsEnabled={physicsEnabled}
           onCopyEventId={handleCopyEventId}
+          onReply={handleReply}
           pendingReactionEventIds={pendingReactionEventIds}
           readyWriteRelayCount={readyWriteRelayCount}
           reactionTabEnabled={reactionTabEnabled}
@@ -1033,30 +1124,74 @@ export function App() {
         onPaste={handleManualPubkeyPaste}
         onSubmit={handleManualPubkeySubmit}
       />
-      <SignerDialog
-        canClearCurrentSigner={Boolean(signerPubkey)}
-        isNip07Available={signerAvailable}
-        isLocalSignerActive={activeSignerKind === "local"}
-        isOpen={signerDialogOpen}
-        isResolvingSignerPubkey={isResolvingSignerPubkey}
-        onClearCurrentSigner={handleClearCurrentSignerFromDialog}
-        onClose={handleCloseSignerDialog}
-        onOpenManualPubkey={handleOpenManualPubkeyFromSignerDialog}
-        onUseExtension={handleUseNip07FromDialog}
-        onUseNsec={handleUseNsecFromDialog}
-      />
-      <EventJsonDialog
-        isOpen={eventJsonDialogState.isOpen}
-        jsonText={eventJsonDialogState.jsonText}
-        onCopy={handleCopyEventJson}
-        title={eventJsonDialogState.title}
-        onClose={() => {
-          setEventJsonDialogState((current) => ({
-            ...current,
-            isOpen: false,
-          }));
-        }}
-      />
+      {signerDialogOpen ? (
+        <Suspense
+          fallback={(
+            <div className="dialog-backdrop" role="presentation">
+              <section
+                className="dialog-panel"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="signer-dialog-loading-title"
+              >
+                <div className="dialog-copy">
+                  <h2 id="signer-dialog-loading-title" className="dialog-title">
+                    Signer
+                  </h2>
+                  <p className="muted dialog-text">読み込み中...</p>
+                </div>
+              </section>
+            </div>
+          )}
+        >
+          <LazySignerDialog
+            canClearCurrentSigner={Boolean(signerPubkey)}
+            isNip07Available={signerAvailable}
+            isLocalSignerActive={activeSignerKind === "local"}
+            isOpen={signerDialogOpen}
+            isResolvingSignerPubkey={isResolvingSignerPubkey}
+            onClearCurrentSigner={handleClearCurrentSignerFromDialog}
+            onClose={handleCloseSignerDialog}
+            onOpenManualPubkey={handleOpenManualPubkeyFromSignerDialog}
+            onUseExtension={handleUseNip07FromDialog}
+            onUseNsec={handleUseNsecFromDialog}
+          />
+        </Suspense>
+      ) : null}
+      {eventJsonDialogState.isOpen ? (
+        <Suspense
+          fallback={(
+            <div className="dialog-backdrop" role="presentation">
+              <section
+                className="dialog-panel"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="event-json-loading-title"
+              >
+                <div className="dialog-copy">
+                  <h2 id="event-json-loading-title" className="dialog-title">
+                    {eventJsonDialogState.title}
+                  </h2>
+                  <p className="muted dialog-text">読み込み中...</p>
+                </div>
+              </section>
+            </div>
+          )}
+        >
+          <LazyEventJsonDialog
+            isOpen={eventJsonDialogState.isOpen}
+            jsonText={eventJsonDialogState.jsonText}
+            onCopy={handleCopyEventJson}
+            title={eventJsonDialogState.title}
+            onClose={() => {
+              setEventJsonDialogState((current) => ({
+                ...current,
+                isOpen: false,
+              }));
+            }}
+          />
+        </Suspense>
+      ) : null}
     </main>
   );
 }

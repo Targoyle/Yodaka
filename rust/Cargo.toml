@@ -2,6 +2,7 @@
 members = [
     "crates/nostr_core",
     "crates/nostr_wasm",
+    "crates/nostr_physics_wasm",
     "crates/nostr_miner_core",
     "crates/nostr_miner_wasm",
 ]
@@ -11,6 +12,8 @@ resolver = "2"
 edition = "2024"
 license = "MIT"
 version = "0.1.0"
+description = "A lightweight Nostr client"
+repository = "https://github.com/Targoyle/Yodaka"
 
 [workspace.dependencies]
 nostr = { version = "0.42.2", default-features = false }

@@ -2,18 +2,28 @@ import type {
   ChangeEventHandler,
   FormEventHandler,
   KeyboardEventHandler,
+  Ref,
 } from "react";
+import {
+  formatAuthorLabel,
+  formatPubkey,
+} from "../lib/nostr/profilePresentation";
+import { formatReplyPreviewContent } from "../lib/ui/replyPreview";
+import type { TimelineItem } from "../lib/wasm/client";
 
 type ComposerPanelProps = {
   draftContent: string;
   errorMessage: string | null;
   isPublishing: boolean;
   readyWriteRelayCount: number;
+  replyTargetItem: TimelineItem | null;
   statusMessage: string | null;
   onClearFeedback: () => void;
   onDraftChange: (value: string) => void;
   onDraftKeyDown: KeyboardEventHandler<HTMLTextAreaElement>;
+  onReplyCancel: () => void;
   onSubmit: FormEventHandler<HTMLFormElement>;
+  textareaRef?: Ref<HTMLTextAreaElement>;
 };
 
 export function ComposerPanel(props: ComposerPanelProps) {
@@ -21,6 +31,15 @@ export function ComposerPanel(props: ComposerPanelProps) {
     props.isPublishing
     || props.readyWriteRelayCount === 0
     || props.draftContent.trim().length === 0;
+  const replyTargetPubkey = props.replyTargetItem
+    ? formatPubkey(props.replyTargetItem.pubkey)
+    : null;
+  const replyTargetLabel = props.replyTargetItem && replyTargetPubkey
+    ? formatAuthorLabel(props.replyTargetItem, replyTargetPubkey)
+    : null;
+  const replyTargetPreview = props.replyTargetItem
+    ? formatReplyPreviewContent(props.replyTargetItem)
+    : null;
 
   const handleDraftChange: ChangeEventHandler<HTMLTextAreaElement> = (event) => {
     props.onDraftChange(event.target.value);
@@ -37,12 +56,37 @@ export function ComposerPanel(props: ComposerPanelProps) {
         data-bwignore="true"
         data-lpignore="true"
       >
+        {props.replyTargetItem && replyTargetLabel ? (
+          <div className="composer-reply-preview">
+            <div className="composer-reply-row">
+              <div className="composer-reply-copy">
+                <p className="composer-reply-label">
+                  {`↪ ${replyTargetLabel} へ返信`}
+                </p>
+                {replyTargetPreview ? (
+                  <p className="composer-reply-text">
+                    {replyTargetPreview}
+                  </p>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                className="composer-reply-cancel"
+                onClick={props.onReplyCancel}
+                disabled={props.isPublishing}
+              >
+                取消
+              </button>
+            </div>
+          </div>
+        ) : null}
         <textarea
+          ref={props.textareaRef}
           className="composer-textarea"
           value={props.draftContent}
           onKeyDown={props.onDraftKeyDown}
           onChange={handleDraftChange}
-          placeholder="kind 1 を投稿"
+          placeholder={props.replyTargetItem ? "リプライを書く" : "kind 1 を投稿"}
           name="nostr-note-content"
           rows={1}
           maxLength={8 * 1024}

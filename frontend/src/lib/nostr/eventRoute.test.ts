@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { encodeNevent } from "./nip19";
 import {
+  buildFocusedEventHref,
   resolveFocusedEventRouteFromLocation,
   stripFocusedEventFromLocation,
 } from "./eventRoute";
@@ -47,5 +49,42 @@ describe("stripFocusedEventFromLocation", () => {
         search: "",
       }),
     ).toBe("/nostr/miner");
+  });
+});
+
+describe("buildFocusedEventHref", () => {
+  it("base path に nevent を追加する", () => {
+    expect(
+      buildFocusedEventHref(
+        "nevent1qqsqmjvzgayw2xfr4dcwlswu9zq45rjanpjqpk0qtar05aheda89ssgxykq0y",
+        {
+          pathname: "/nostr/",
+          search: "?foo=1",
+          hash: "#bar",
+        },
+      ),
+    ).toBe(
+      "/nostr/nevent1qqsqmjvzgayw2xfr4dcwlswu9zq45rjanpjqpk0qtar05aheda89ssgxykq0y?foo=1#bar",
+    );
+  });
+
+  it("既存 focused event を置き換える", () => {
+    const previousNevent = encodeNevent(
+      "dbe57554549f92c08bea790b05dc37dec6f3373303123f9e231635ee594ceb6a",
+    );
+
+    expect(previousNevent).not.toBeNull();
+    expect(
+      buildFocusedEventHref(
+        "nevent1qqsqmjvzgayw2xfr4dcwlswu9zq45rjanpjqpk0qtar05aheda89ssgxykq0y",
+        {
+          pathname: `/nostr/${previousNevent}`,
+          search: "",
+          hash: "",
+        },
+      ),
+    ).toBe(
+      "/nostr/nevent1qqsqmjvzgayw2xfr4dcwlswu9zq45rjanpjqpk0qtar05aheda89ssgxykq0y",
+    );
   });
 });

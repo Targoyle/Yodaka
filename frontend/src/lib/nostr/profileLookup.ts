@@ -1,8 +1,6 @@
-import { decodeNpub } from "./nip19";
+import { extractContentProfileReferences } from "./contentReferences";
 import { normalizeHexPubkey } from "./pubkey";
 import type { NostrEvent } from "./relay";
-
-const NPUB_MENTION_RE = /(?:nostr:)?(npub1[ac-hj-np-z02-9]+)/gi;
 
 export function extractProfileLookupPubkeysFromEvent(event: NostrEvent) {
   const pubkeys = new Set<string>();
@@ -25,8 +23,8 @@ export function extractProfileLookupPubkeysFromEvent(event: NostrEvent) {
     }
   }
 
-  for (const match of event.content.matchAll(NPUB_MENTION_RE)) {
-    pushPubkey(pubkeys, decodeNpub(match[1] ?? ""));
+  for (const reference of extractContentProfileReferences(event.content)) {
+    pushPubkey(pubkeys, reference.pubkey);
   }
 
   return [...pubkeys];

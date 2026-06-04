@@ -380,8 +380,7 @@ impl Timeline {
                     .iter()
                     .filter_map(|reaction_id| self.reaction_events.get(reaction_id))
                     .filter(|reaction| {
-                        !is_like_reaction_event(reaction)
-                            && !is_kusa_reaction_event(reaction)
+                        !is_like_reaction_event(reaction) && !is_kusa_reaction_event(reaction)
                     })
                     .count() as u32
             })
@@ -526,7 +525,10 @@ impl Timeline {
         let root_tag = find_root_event_tag(event);
 
         if let Some(reply_target_tag) = reply_target_tag {
-            push_reply_relay_hint(&mut relay_hints, reply_target_tag.get(2).map(String::as_str));
+            push_reply_relay_hint(
+                &mut relay_hints,
+                reply_target_tag.get(2).map(String::as_str),
+            );
         }
 
         if let Some(root_tag) = root_tag {
@@ -961,7 +963,8 @@ fn find_reply_event_tag(event: &StoredEvent) -> Option<&Vec<String>> {
 }
 
 fn list_event_reference_tags(event: &StoredEvent) -> Vec<&Vec<String>> {
-    event.tags
+    event
+        .tags
         .iter()
         .filter(|tag| tag.first().is_some_and(|value| value == "e") && tag.get(1).is_some())
         .collect()
@@ -1045,10 +1048,7 @@ fn sort_reply_context_pubkeys(pubkeys: Vec<String>, self_pubkey: &str) -> Vec<St
     exclude_self_reply_context_pubkeys(pubkeys, self_pubkey)
 }
 
-fn prefer_non_self_reply_context_pubkey(
-    pubkeys: &[String],
-    self_pubkey: &str,
-) -> Option<String> {
+fn prefer_non_self_reply_context_pubkey(pubkeys: &[String], self_pubkey: &str) -> Option<String> {
     pubkeys
         .iter()
         .find(|pubkey| pubkey.as_str() != self_pubkey)
@@ -1110,8 +1110,8 @@ mod tests {
     use nostr::{EventBuilder, JsonUtil, Keys, Metadata, SecretKey, Tag, Timestamp, Url};
 
     use super::{
+        MAX_CONTENT_BYTES, MAX_TAG_VALUE_BYTES, ReactionSummary, SINCE_BUFFER_SEC, Timeline,
         build_unsigned_event, current_unix_timestamp, sanitize_profile_picture_url, verify_event,
-        ReactionSummary, Timeline, MAX_CONTENT_BYTES, MAX_TAG_VALUE_BYTES, SINCE_BUFFER_SEC,
     };
 
     #[test]
@@ -1137,15 +1137,21 @@ mod tests {
         .sign_with_keys(&keys)
         .expect("newer profile should sign");
 
-        assert!(timeline
-            .verify_and_insert(&feed.as_json())
-            .expect("feed event should verify"));
-        assert!(timeline
-            .verify_and_insert(&older.as_json())
-            .expect("older profile should verify"));
-        assert!(timeline
-            .verify_and_insert(&newer.as_json())
-            .expect("newer profile should verify"));
+        assert!(
+            timeline
+                .verify_and_insert(&feed.as_json())
+                .expect("feed event should verify")
+        );
+        assert!(
+            timeline
+                .verify_and_insert(&older.as_json())
+                .expect("older profile should verify")
+        );
+        assert!(
+            timeline
+                .verify_and_insert(&newer.as_json())
+                .expect("newer profile should verify")
+        );
 
         let hint = timeline.since_hint();
         assert_eq!(hint.since, Some(100_u64.saturating_sub(SINCE_BUFFER_SEC)));
@@ -1176,12 +1182,16 @@ mod tests {
             .sign_with_keys(&bob)
             .expect("second event should sign");
 
-        assert!(timeline
-            .verify_and_insert(&first.as_json())
-            .expect("first event should verify"));
-        assert!(timeline
-            .verify_and_insert(&second.as_json())
-            .expect("second event should verify"));
+        assert!(
+            timeline
+                .verify_and_insert(&first.as_json())
+                .expect("first event should verify")
+        );
+        assert!(
+            timeline
+                .verify_and_insert(&second.as_json())
+                .expect("second event should verify")
+        );
 
         let all = timeline.list_timeline(10, None);
         assert_eq!(all.len(), 2);
@@ -1205,9 +1215,11 @@ mod tests {
         let mut invalid_id: serde_json::Value =
             serde_json::from_str(&valid_json).expect("valid json");
         invalid_id["content"] = serde_json::Value::String(String::from("tampered"));
-        assert!(!timeline
-            .verify_and_insert(&invalid_id.to_string())
-            .expect("tampered id should not throw"));
+        assert!(
+            !timeline
+                .verify_and_insert(&invalid_id.to_string())
+                .expect("tampered id should not throw")
+        );
 
         let mut invalid_sig: serde_json::Value =
             serde_json::from_str(&valid_json).expect("valid json");
@@ -1218,9 +1230,11 @@ mod tests {
         let mut mutated = signature[..signature.len() - 1].to_owned();
         mutated.push(replacement);
         invalid_sig["sig"] = serde_json::Value::String(mutated);
-        assert!(!timeline
-            .verify_and_insert(&invalid_sig.to_string())
-            .expect("tampered sig should not throw"));
+        assert!(
+            !timeline
+                .verify_and_insert(&invalid_sig.to_string())
+                .expect("tampered sig should not throw")
+        );
         assert!(!verify_event(&invalid_sig.to_string()).expect("tampered sig should not verify"));
     }
 
@@ -1234,9 +1248,11 @@ mod tests {
             .sign_with_keys(&keys)
             .expect("future event should sign");
 
-        assert!(timeline
-            .verify_and_insert(&event.as_json())
-            .expect("future event should verify"));
+        assert!(
+            timeline
+                .verify_and_insert(&event.as_json())
+                .expect("future event should verify")
+        );
 
         let now = current_unix_timestamp();
         let hint = timeline.since_hint();
@@ -1276,12 +1292,16 @@ mod tests {
             .sign_with_keys(&keys)
             .expect("oversized feed should sign");
 
-        assert!(timeline
-            .verify_and_insert(&metadata.as_json())
-            .expect("metadata should verify"));
-        assert!(timeline
-            .verify_and_insert(&feed.as_json())
-            .expect("feed should verify"));
+        assert!(
+            timeline
+                .verify_and_insert(&metadata.as_json())
+                .expect("metadata should verify")
+        );
+        assert!(
+            timeline
+                .verify_and_insert(&feed.as_json())
+                .expect("feed should verify")
+        );
         assert_eq!(
             timeline.list_timeline(10, None)[0]
                 .profile
@@ -1332,12 +1352,16 @@ mod tests {
             .sign_with_keys(&reply_keys)
             .expect("reply should sign");
 
-        assert!(timeline
-            .verify_and_insert(&root.as_json())
-            .expect("root should verify"));
-        assert!(timeline
-            .verify_and_insert(&reply.as_json())
-            .expect("reply should verify"));
+        assert!(
+            timeline
+                .verify_and_insert(&root.as_json())
+                .expect("root should verify")
+        );
+        assert!(
+            timeline
+                .verify_and_insert(&reply.as_json())
+                .expect("reply should verify")
+        );
 
         let items = timeline.list_timeline(10, None);
         assert_eq!(items.len(), 1);
@@ -1367,18 +1391,25 @@ mod tests {
             .sign_with_keys(&reply_keys)
             .expect("reply should sign");
 
-        assert!(timeline
-            .verify_and_insert(&root.as_json())
-            .expect("root should verify"));
-        assert!(timeline
-            .verify_and_insert(&reply.as_json())
-            .expect("reply should verify"));
+        assert!(
+            timeline
+                .verify_and_insert(&root.as_json())
+                .expect("root should verify")
+        );
+        assert!(
+            timeline
+                .verify_and_insert(&reply.as_json())
+                .expect("reply should verify")
+        );
 
         let items = timeline.list_timeline(10, None);
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].id, reply.id.to_hex());
         assert!(items[0].is_reply);
-        assert_eq!(items[0].reply_target_event_id.as_deref(), Some(root.id.to_hex().as_str()));
+        assert_eq!(
+            items[0].reply_target_event_id.as_deref(),
+            Some(root.id.to_hex().as_str())
+        );
         assert_eq!(
             items[0].reply_target_pubkey.as_deref(),
             Some(root_author.as_str())
@@ -1410,9 +1441,11 @@ mod tests {
             .sign_with_keys(&reply_keys)
             .expect("reply should sign");
 
-        assert!(timeline
-            .verify_and_insert(&reply.as_json())
-            .expect("reply should verify"));
+        assert!(
+            timeline
+                .verify_and_insert(&reply.as_json())
+                .expect("reply should verify")
+        );
 
         let items = timeline.list_timeline(10, None);
         assert_eq!(items[0].reply_target_event_id.as_deref(), Some("target-id"));
@@ -1458,12 +1491,17 @@ mod tests {
             .sign_with_keys(&reply_keys)
             .expect("reply should sign");
 
-        assert!(timeline
-            .verify_and_insert(&reply.as_json())
-            .expect("reply should verify"));
+        assert!(
+            timeline
+                .verify_and_insert(&reply.as_json())
+                .expect("reply should verify")
+        );
 
         let items = timeline.list_timeline(10, None);
-        assert_eq!(items[0].reply_target_event_id.as_deref(), Some("reply-id-2"));
+        assert_eq!(
+            items[0].reply_target_event_id.as_deref(),
+            Some("reply-id-2")
+        );
         assert_eq!(
             items[0].reply_target_pubkey.as_deref(),
             Some(reply_target_author.as_str())
@@ -1497,8 +1535,14 @@ mod tests {
                     .expect("root tag should parse"),
             )
             .tag(
-                Tag::parse(["e", "mention-id", "wss://mention.example/", "", &mention_author])
-                    .expect("mention tag should parse"),
+                Tag::parse([
+                    "e",
+                    "mention-id",
+                    "wss://mention.example/",
+                    "",
+                    &mention_author,
+                ])
+                .expect("mention tag should parse"),
             )
             .tag(
                 Tag::parse([
@@ -1517,12 +1561,17 @@ mod tests {
             .sign_with_keys(&reply_keys)
             .expect("reply should sign");
 
-        assert!(timeline
-            .verify_and_insert(&reply.as_json())
-            .expect("reply should verify"));
+        assert!(
+            timeline
+                .verify_and_insert(&reply.as_json())
+                .expect("reply should verify")
+        );
 
         let items = timeline.list_timeline(10, None);
-        assert_eq!(items[0].reply_target_event_id.as_deref(), Some("reply-id-3"));
+        assert_eq!(
+            items[0].reply_target_event_id.as_deref(),
+            Some("reply-id-3")
+        );
         assert_eq!(
             items[0].reply_target_pubkey.as_deref(),
             Some(reply_target_author.as_str())
@@ -1562,17 +1611,30 @@ mod tests {
             .sign_with_keys(&self_keys)
             .expect("reply should sign");
 
-        assert!(timeline
-            .verify_and_insert(&root.as_json())
-            .expect("root should verify"));
-        assert!(timeline
-            .verify_and_insert(&reply.as_json())
-            .expect("reply should verify"));
+        assert!(
+            timeline
+                .verify_and_insert(&root.as_json())
+                .expect("root should verify")
+        );
+        assert!(
+            timeline
+                .verify_and_insert(&reply.as_json())
+                .expect("reply should verify")
+        );
 
         let items = timeline.list_timeline(10, None);
-        assert_eq!(items[0].reply_target_event_id.as_deref(), Some(root.id.to_hex().as_str()));
-        assert_eq!(items[0].reply_target_pubkey.as_deref(), Some(other_author.as_str()));
-        assert_eq!(items[0].reply_context_pubkeys, vec![other_author, self_author]);
+        assert_eq!(
+            items[0].reply_target_event_id.as_deref(),
+            Some(root.id.to_hex().as_str())
+        );
+        assert_eq!(
+            items[0].reply_target_pubkey.as_deref(),
+            Some(other_author.as_str())
+        );
+        assert_eq!(
+            items[0].reply_context_pubkeys,
+            vec![other_author, self_author]
+        );
     }
 
     #[test]
@@ -1585,8 +1647,7 @@ mod tests {
         let carol = test_keys("1212121212121212121212121212121212121212121212121212121212121212");
         let dave = test_keys("3434343434343434343434343434343434343434343434343434343434343434");
         let erin = test_keys("5656565656565656565656565656565656565656565656565656565656565656");
-        let frank =
-            test_keys("7878787878787878787878787878787878787878787878787878787878787878");
+        let frank = test_keys("7878787878787878787878787878787878787878787878787878787878787878");
 
         let note = EventBuilder::text_note("root")
             .custom_created_at(Timestamp::from_secs(100))
@@ -1617,27 +1678,41 @@ mod tests {
             .sign_with_keys(&frank)
             .expect("rocket reaction should sign");
 
-        assert!(timeline
-            .verify_and_insert(&note.as_json())
-            .expect("note should verify"));
-        assert!(timeline
-            .verify_and_insert(&empty_reaction.as_json())
-            .expect("empty reaction should verify"));
-        assert!(timeline
-            .verify_and_insert(&plus_reaction.as_json())
-            .expect("plus reaction should verify"));
-        assert!(timeline
-            .verify_and_insert(&emoji_reaction.as_json())
-            .expect("emoji reaction should verify"));
-        assert!(timeline
-            .verify_and_insert(&kusa_reaction.as_json())
-            .expect("kusa reaction should verify"));
-        assert!(timeline
-            .verify_and_insert(&second_emoji_reaction.as_json())
-            .expect("second emoji reaction should verify"));
-        assert!(timeline
-            .verify_and_insert(&rocket_reaction.as_json())
-            .expect("rocket reaction should verify"));
+        assert!(
+            timeline
+                .verify_and_insert(&note.as_json())
+                .expect("note should verify")
+        );
+        assert!(
+            timeline
+                .verify_and_insert(&empty_reaction.as_json())
+                .expect("empty reaction should verify")
+        );
+        assert!(
+            timeline
+                .verify_and_insert(&plus_reaction.as_json())
+                .expect("plus reaction should verify")
+        );
+        assert!(
+            timeline
+                .verify_and_insert(&emoji_reaction.as_json())
+                .expect("emoji reaction should verify")
+        );
+        assert!(
+            timeline
+                .verify_and_insert(&kusa_reaction.as_json())
+                .expect("kusa reaction should verify")
+        );
+        assert!(
+            timeline
+                .verify_and_insert(&second_emoji_reaction.as_json())
+                .expect("second emoji reaction should verify")
+        );
+        assert!(
+            timeline
+                .verify_and_insert(&rocket_reaction.as_json())
+                .expect("rocket reaction should verify")
+        );
 
         let items = timeline.list_timeline(10, None);
         assert_eq!(items.len(), 1);

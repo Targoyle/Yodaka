@@ -78,7 +78,10 @@ fn secret_key_from_hex(secret_hex: &str) -> Result<SecretKey, MinerError> {
 }
 
 fn secret_bytes_from_hex(secret_hex: &str) -> Result<[u8; 32], MinerError> {
-    let normalized = secret_hex.trim().strip_prefix("0x").unwrap_or(secret_hex.trim());
+    let normalized = secret_hex
+        .trim()
+        .strip_prefix("0x")
+        .unwrap_or(secret_hex.trim());
 
     if normalized.len() != 64 {
         return Err(MinerError::InvalidSecretKeyLength);
@@ -88,7 +91,8 @@ fn secret_bytes_from_hex(secret_hex: &str) -> Result<[u8; 32], MinerError> {
     for index in 0..32 {
         let offset = index * 2;
         let slice = &normalized[offset..offset + 2];
-        bytes[index] = u8::from_str_radix(slice, 16).map_err(|_| MinerError::InvalidSecretKeyHex)?;
+        bytes[index] =
+            u8::from_str_radix(slice, 16).map_err(|_| MinerError::InvalidSecretKeyHex)?;
     }
 
     Ok(bytes)
@@ -143,9 +147,7 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        WORDS_PER_POINT, WINDOW_VALUES, derive_secret_summary, generator_window_table,
-    };
+    use super::{WINDOW_VALUES, WORDS_PER_POINT, derive_secret_summary, generator_window_table};
 
     fn secret_hex(value: u64) -> String {
         format!("{value:064x}")
@@ -153,9 +155,10 @@ mod tests {
 
     #[test]
     fn derives_pubkey_for_secret_one() {
-        let summary =
-            derive_secret_summary("0000000000000000000000000000000000000000000000000000000000000001")
-                .expect("secret summary should succeed");
+        let summary = derive_secret_summary(
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
+        .expect("secret summary should succeed");
 
         assert_eq!(
             summary.pubkey_hex,
@@ -164,13 +167,7 @@ mod tests {
         assert_eq!(
             summary.x_words,
             [
-                0x16f81798,
-                0x59f2815b,
-                0x2dce28d9,
-                0x029bfcdb,
-                0xce870b07,
-                0x55a06295,
-                0xf9dcbbac,
+                0x16f81798, 0x59f2815b, 0x2dce28d9, 0x029bfcdb, 0xce870b07, 0x55a06295, 0xf9dcbbac,
                 0x79be667e,
             ]
         );

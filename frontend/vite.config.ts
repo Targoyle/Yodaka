@@ -19,6 +19,13 @@ export default defineConfig(({ command, mode }) => ({
     command === "build"
       ? normalizeBasePath(process.env.BASE_PATH ?? "./")
       : "/",
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: buildManualChunkName,
+      },
+    },
+  },
   plugins: [
     react(),
     wasm(),
@@ -36,6 +43,7 @@ export default defineConfig(({ command, mode }) => ({
   resolve: {
     alias: {
       "@wasm": path.resolve(__dirname, "src/wasm/pkg"),
+      "@physics-wasm": path.resolve(__dirname, "src/physics_wasm/pkg"),
       "@miner-wasm": path.resolve(__dirname, "src/miner_wasm/pkg"),
     },
   },
@@ -56,6 +64,31 @@ function normalizeBasePath(value: string) {
   return withLeadingSlash.endsWith("/")
     ? withLeadingSlash
     : `${withLeadingSlash}/`;
+}
+
+function buildManualChunkName(id: string) {
+  if (
+    id.includes("/node_modules/react/")
+    || id.includes("/node_modules/react-dom/")
+  ) {
+    return "react-vendor";
+  }
+
+  if (
+    id.includes("/src/lib/wasm/gravity.ts")
+    || id.includes("/src/physics_wasm/pkg/")
+  ) {
+    return "physics-wasm";
+  }
+
+  if (
+    id.includes("/src/lib/wasm/")
+    || id.includes("/src/wasm/pkg/")
+  ) {
+    return "nostr-wasm";
+  }
+
+  return undefined;
 }
 
 function buildHmrConfig(mode: string) {

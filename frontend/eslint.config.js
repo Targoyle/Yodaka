@@ -7,6 +7,7 @@ export default [
       "dist/**",
       "node_modules/**",
       "src/wasm/pkg/**",
+      "src/physics_wasm/pkg/**",
       "src/miner_wasm/pkg/**",
     ],
   },

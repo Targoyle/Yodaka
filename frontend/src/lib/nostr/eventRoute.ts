@@ -42,6 +42,38 @@ export function resolveFocusedEventRouteFromLocation(
   } satisfies FocusedEventRoute;
 }
 
+export function buildFocusedEventHref(
+  nevent: string,
+  locationLike: LocationLike | URL | null | undefined = getCurrentLocation(),
+) {
+  if (!decodeNevent(nevent)) {
+    return null;
+  }
+
+  if (!locationLike) {
+    return `/${encodeURIComponent(nevent)}`;
+  }
+
+  const pathname =
+    locationLike instanceof URL ? locationLike.pathname : locationLike.pathname;
+  const search =
+    locationLike instanceof URL ? locationLike.search : locationLike.search;
+  const hash = locationLike instanceof URL ? locationLike.hash : locationLike.hash ?? "";
+  const rawSegments = pathname
+    .split("/")
+    .filter(Boolean)
+    .filter((segment) => decodePathSegment(segment).toLowerCase() !== "index.html");
+  const lastSegment = rawSegments.at(-1);
+
+  if (lastSegment && decodeNevent(decodePathSegment(lastSegment))) {
+    rawSegments.pop();
+  }
+
+  rawSegments.push(encodeURIComponent(nevent));
+
+  return `/${rawSegments.join("/")}${search}${hash}`;
+}
+
 export function stripFocusedEventFromLocation(
   locationLike: LocationLike | URL | null | undefined = getCurrentLocation(),
 ) {

@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  decodeNaddr,
   decodeNevent,
+  decodeNote,
+  decodeNprofile,
   decodeNpub,
   decodeNsec,
   encodeNevent,
+  encodeNote,
   encodeNpub,
   encodeNsec,
 } from "./nip19";
@@ -39,6 +43,17 @@ describe("encodeNevent", () => {
   });
 });
 
+describe("encodeNote", () => {
+  it("イベント ID を note 形式へ変換できる", () => {
+    const eventId =
+      "dbe57554549f92c08bea790b05dc37dec6f3373303123f9e231635ee594ceb6a";
+    const encoded = encodeNote(eventId);
+
+    expect(encoded).toMatch(/^note1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]+$/);
+    expect(encodeNote(eventId.toUpperCase())).toBe(encoded);
+  });
+});
+
 describe("decodeNevent", () => {
   it("nevent を event id へ戻せる", () => {
     const eventId =
@@ -71,6 +86,46 @@ describe("decodeNevent", () => {
     expect(
       decodeNevent("npub14f8usejl26twx0dhuxjh9cas7keav9vr0v8nvtwtrjqx3vycc76qqh9nsy"),
     ).toBeNull();
+  });
+});
+
+describe("decodeNote", () => {
+  it("note を event id へ戻せる", () => {
+    const eventId =
+      "dbe57554549f92c08bea790b05dc37dec6f3373303123f9e231635ee594ceb6a";
+    const note = encodeNote(eventId);
+
+    expect(note).not.toBeNull();
+    expect(decodeNote(note ?? "")).toBe(eventId);
+    expect(decodeNote(`nostr:${note}`)).toBe(eventId);
+  });
+});
+
+describe("decodeNprofile", () => {
+  it("nprofile から pubkey と relay hint を読める", () => {
+    expect(
+      decodeNprofile(
+        "nprofile1qqszclxx9f5haga8sfjjrulaxncvkfekj097t6f3pu65f86rvg49ehqj6f9dh",
+      ),
+    ).toEqual({
+      pubkey: "2c7cc62a697ea3a7826521f3fd34f0cb273693cbe5e9310f35449f43622a5cdc",
+      relayUrls: [],
+    });
+  });
+});
+
+describe("decodeNaddr", () => {
+  it("naddr から address と relay hint を読める", () => {
+    expect(
+      decodeNaddr(
+        "naddr1qqyrzwrxvc6ngvfkqyghwumn8ghj7enfv96x5ctx9e3k7mgzyqalp33lewf5vdq847t6te0wvnags0gs0mu72kz8938tn24wlfze6qcyqqq823cph95ag",
+      ),
+    ).toEqual({
+      identifier: "18ff5416",
+      kind: 30023,
+      pubkey: "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d",
+      relayUrls: ["wss://fiatjaf.com"],
+    });
   });
 });
 

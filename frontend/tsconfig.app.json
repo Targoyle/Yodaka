@@ -23,6 +23,9 @@
       "@wasm/*": [
         "./src/wasm/pkg/*"
       ],
+      "@physics-wasm/*": [
+        "./src/physics_wasm/pkg/*"
+      ],
       "@miner-wasm/*": [
         "./src/miner_wasm/pkg/*"
       ]

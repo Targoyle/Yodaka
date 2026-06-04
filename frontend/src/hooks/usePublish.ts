@@ -18,6 +18,7 @@ import {
   type UnsignedNostrEvent,
 } from "../lib/nostr/signer";
 import { assertSignedEventMatchesUnsigned } from "../lib/nostr/publish";
+import { prepareTextNotePublish } from "../lib/nostr/textNotePublish";
 import {
   buildUnsignedEvent,
   verifyAndInsert,
@@ -37,7 +38,9 @@ type UsePublishArgs = {
   createActiveSigner: () => NostrSigner | null;
   ensureSignerPubkey: () => Promise<string>;
   markSignerUnavailable: () => void;
+  rememberLocalPublishedTextNote: (event: NostrEvent) => void;
   rememberLocalReactionTarget: (item: TimelineItem) => void;
+  referenceItemsById: ReadonlyMap<string, TimelineItem>;
   queueProfileLookupRef: MutableRefObject<(pubkey: string) => void>;
   refreshSnapshotRef: MutableRefObject<() => Promise<TimelineItem[] | null>>;
   relayCoordinatorRef: MutableRefObject<RelayCoordinator | null>;
@@ -55,6 +58,10 @@ export function usePublish(args: UsePublishArgs) {
   const [pendingReactionEventIds, setPendingReactionEventIds] = useState<string[]>([]);
   const [publishMessage, setPublishMessage] = useState<string | null>(null);
   const [publishError, setPublishError] = useState<string | null>(null);
+  const [replyTargetDraftItem, setReplyTargetDraftItem] = useState<TimelineItem | null>(null);
+  const replyTargetItem = replyTargetDraftItem
+    ? args.referenceItemsById.get(replyTargetDraftItem.id) ?? replyTargetDraftItem
+    : null;
 
   async function publishDraft() {
     const content = draftContent;
@@ -93,12 +100,17 @@ export function usePublish(args: UsePublishArgs) {
 
     try {
       const pubkey = await resolveSigningPubkey(args);
+      const textNotePublish = prepareTextNotePublish({
+        content,
+        referenceItemsById: args.referenceItemsById,
+        replyTargetItem,
+      });
 
       const unsigned = await buildUnsignedEvent({
         pubkey,
-        content,
+        content: textNotePublish.content,
         kind: 1,
-        tags: [],
+        tags: textNotePublish.tags,
       });
       const signerEvent = toSignerEvent(unsigned);
       const signed = await signer.signEvent(signerEvent);
@@ -145,6 +157,13 @@ export function usePublish(args: UsePublishArgs) {
         );
       }
 
+      if (inserted) {
+        args.rememberLocalPublishedTextNote(relayEvent);
+        await args.refreshSnapshotRef.current();
+      } else {
+        args.scheduleRefreshRef.current();
+      }
+
       for (const relayUrl of publishResult.acceptedRelayUrls) {
         try {
           await persistAcceptedEvent({
@@ -159,9 +178,9 @@ export function usePublish(args: UsePublishArgs) {
       }
 
       setDraftContent("");
+      setReplyTargetDraftItem(null);
       setPublishMessage(formatPublishSuccessMessage(publishResult));
       setPublishError(null);
-      args.scheduleRefreshRef.current();
       args.queueProfileLookupRef.current(relayEvent.pubkey);
     } catch (error) {
       if (error instanceof UnsupportedSignerError) {
@@ -363,7 +382,23 @@ export function usePublish(args: UsePublishArgs) {
     setPublishMessage(null);
   }
 
+  function beginReply(item: TimelineItem) {
+    if (item.kind !== 1) {
+      return;
+    }
+
+    setReplyTargetDraftItem(item);
+    clearPublishFeedback();
+  }
+
+  function cancelReply() {
+    setReplyTargetDraftItem(null);
+    clearPublishFeedback();
+  }
+
   return {
+    beginReply,
+    cancelReply,
     clearPublishFeedback,
     draftContent,
     handleDraftContentChange,
@@ -374,6 +409,7 @@ export function usePublish(args: UsePublishArgs) {
     pendingReactionEventIds,
     publishError,
     publishMessage,
+    replyTargetItem,
   };
 }
 

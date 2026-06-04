@@ -269,6 +269,52 @@ export function useAccountTimeline(args: UseAccountTimelineArgs) {
     setAccountError(null);
   }
 
+  const rememberLocalPublishedTextNote = useCallback((event: NostrEvent) => {
+    if (!args.viewerPubkey || event.kind !== 1) {
+      return;
+    }
+
+    const normalizedViewerPubkey = normalizeHexPubkey(args.viewerPubkey);
+
+    if (normalizeHexPubkey(event.pubkey) !== normalizedViewerPubkey) {
+      return;
+    }
+
+    const [localItem] = buildAuxiliaryTimeline({
+      events: [event],
+      profileSummaries: args.profileSummariesRef.current,
+      referenceItems: args.timeline,
+      timelineLimit: 1,
+    });
+
+    if (!localItem) {
+      return;
+    }
+
+    setAccountTimeline((current) => {
+      const next = mergeAuxiliaryTimeline({
+        currentItems: current,
+        includeItem: (item) => item.pubkey === normalizedViewerPubkey,
+        profileSummaries: args.profileSummariesRef.current,
+        referenceItems: [localItem, ...args.timeline],
+        timelineLimit: args.timelineLimit,
+      });
+
+      return timelineItemsEqual(current, next) ? current : next;
+    });
+    setAccountLoadState((current) => (current === "idle" ? "ready" : current));
+    setAccountError(null);
+    setAccountFetchMeta((current) => ({
+      noteCount: Math.max(current.noteCount, 1),
+      lastFetchedAt: Date.now(),
+    }));
+  }, [
+    args.profileSummariesRef,
+    args.timeline,
+    args.timelineLimit,
+    args.viewerPubkey,
+  ]);
+
   const resetAccountState = useCallback(() => {
     setAccountLoadState("idle");
     setAccountSourceKey(null);
@@ -318,6 +364,7 @@ export function useAccountTimeline(args: UseAccountTimelineArgs) {
     accountTimeline,
     clearAccountError,
     primeAccountLoad,
+    rememberLocalPublishedTextNote,
     resetAccountState,
   };
 }

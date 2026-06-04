@@ -7,26 +7,34 @@ import {
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import type { AuxiliaryTimelineDiagnostic, TimelineView } from "../app/types";
 import type { ReactionIntent } from "../lib/nostr/reaction";
 import { formatRecordedAt } from "../lib/ui/formatters";
 import type { TimelineItem } from "../lib/wasm/client";
-import {
+import type {
+  GravityBodySeed,
+  GravityBodySnapshot,
   GravityWorld,
-  type GravityBodySeed,
-  type GravityBodySnapshot,
 } from "../lib/wasm/gravity";
 import { TimelineCard } from "./TimelineCard";
 
 const PHYSICS_CARD_GUTTER_PX = 16;
 const PHYSICS_CARD_INLINE_SIZE_PX = 360;
 const PHYSICS_CARD_FALLBACK_HEIGHT_PX = 180;
-const PHYSICS_NEW_ITEM_SPAWN_Y_PX = 24;
+const PHYSICS_DEBUG_PANEL_GUTTER_PX = 12;
+const PHYSICS_FLOOR_MARGIN_PX = 2;
 const PHYSICS_INITIAL_STACK_OVERLAP_PX = 56;
+const PHYSICS_MAX_ACTIVE_BODIES = 6;
+const PHYSICS_ROTATION_ENABLED = false;
+const PHYSICS_SPAWN_X_JITTER_PX = 96;
+const PHYSICS_TOP_SPAWN_PADDING_PX = 40;
+const PHYSICS_TOP_SPAWN_STEP_PX = 18;
 
 type TimelinePanelProps = {
   accountTabEnabled: boolean;
   canOpenPersonalTimeline: boolean;
+  canReply: boolean;
   canSendReaction: boolean;
   developerModeEnabled: boolean;
   emptyMessage: string;
@@ -35,6 +43,7 @@ type TimelinePanelProps = {
   isPublishing: boolean;
   notifyTabEnabled: boolean;
   onCopyEventId: (eventId: string) => void | Promise<void>;
+  onReply: (item: TimelineItem) => void | Promise<void>;
   pendingReactionEventIds: string[];
   physicsEnabled: boolean;
   readyWriteRelayCount: number;
@@ -55,6 +64,34 @@ type ViewportSize = {
   width: number;
   height: number;
 };
+
+type PanelPosition = {
+  x: number;
+  y: number;
+};
+
+type PhysicsDebugDragState = {
+  pointerId: number;
+  offsetX: number;
+  offsetY: number;
+};
+
+type PhysicsSpawnBlockedRange = {
+  start: number;
+  end: number;
+};
+
+type GravityModule = typeof import("../lib/wasm/gravity");
+
+let gravityModulePromise: Promise<GravityModule> | null = null;
+
+function loadGravityModule() {
+  if (!gravityModulePromise) {
+    gravityModulePromise = import("../lib/wasm/gravity");
+  }
+
+  return gravityModulePromise;
+}
 
 export function TimelinePanel(props: TimelinePanelProps) {
   const activeTimelineView = props.focusedEventMode ? null : props.timelineView;
@@ -77,9 +114,17 @@ export function TimelinePanel(props: TimelinePanelProps) {
     width: 0,
     height: 0,
   });
+  const [physicsDebugPanelPosition, setPhysicsDebugPanelPosition] = useState<PanelPosition>({
+    x: PHYSICS_DEBUG_PANEL_GUTTER_PX,
+    y: PHYSICS_DEBUG_PANEL_GUTTER_PX,
+  });
+  const [isPhysicsDebugPanelDragging, setIsPhysicsDebugPanelDragging] = useState(false);
   const visibleTimelineRef = useRef<TimelineItem[]>(props.visibleTimeline);
   const hoveredReactionButtonCountRef = useRef(0);
   const reactionPauseReleaseTimerRef = useRef<number | null>(null);
+  const physicsDebugDragRef = useRef<PhysicsDebugDragState | null>(null);
+  const physicsDebugPanelRef = useRef<HTMLElement | null>(null);
+  const timelinePanelRef = useRef<HTMLElement | null>(null);
   const physicsStageRef = useRef<HTMLDivElement | null>(null);
   const physicsMeasureRefs = useRef<Record<string, HTMLLIElement | null>>({});
   const physicsWorldRef = useRef<GravityWorld | null>(null);
@@ -170,42 +215,29 @@ export function TimelinePanel(props: TimelinePanelProps) {
   }, [props.physicsEnabled]);
 
   useEffect(() => {
+    if (!props.physicsEnabled) {
+      return;
+    }
+
+    void loadGravityModule();
+  }, [props.physicsEnabled]);
+
+  useEffect(() => {
     if (!props.physicsEnabled || typeof window === "undefined") {
       return;
     }
 
     const html = document.documentElement;
     const body = document.body;
-    const scrollY = window.scrollY;
     const previousHtmlOverflow = html.style.overflow;
     const previousBodyOverflow = body.style.overflow;
-    const previousBodyPosition = body.style.position;
-    const previousBodyTop = body.style.top;
-    const previousBodyInlineSize = body.style.width;
-    const previousBodyInsetInlineStart = body.style.left;
-    const previousBodyInsetInlineEnd = body.style.right;
 
     html.style.overflow = "hidden";
     body.style.overflow = "hidden";
-    body.style.position = "fixed";
-    body.style.top = `-${scrollY}px`;
-    body.style.width = "100%";
-    body.style.left = "0";
-    body.style.right = "0";
 
     return () => {
       html.style.overflow = previousHtmlOverflow;
       body.style.overflow = previousBodyOverflow;
-      body.style.position = previousBodyPosition;
-      body.style.top = previousBodyTop;
-      body.style.width = previousBodyInlineSize;
-      body.style.left = previousBodyInsetInlineStart;
-      body.style.right = previousBodyInsetInlineEnd;
-      window.scrollTo({
-        top: scrollY,
-        left: 0,
-        behavior: "instant",
-      });
     };
   }, [props.physicsEnabled]);
 
@@ -293,6 +325,47 @@ export function TimelinePanel(props: TimelinePanelProps) {
     return next;
   }, [props.timelineReferenceItems, visibleCards]);
 
+  const physicsBodyDebugRows = useMemo(() => {
+    if (!physicsTimelineSnapshot || !physicsSnapshots) {
+      return [];
+    }
+
+    return physicsTimelineSnapshot.map((item, index) => {
+      const snapshot = physicsSnapshots[index];
+
+      if (!snapshot) {
+        return `${index}. ${formatPhysicsDebugId(item.id)} missing`;
+      }
+
+      return `${index}. x:${formatPhysicsDebugNumber(snapshot.x)} y:${formatPhysicsDebugNumber(snapshot.y)} w:${formatPhysicsDebugNumber(snapshot.width)} h:${formatPhysicsDebugNumber(snapshot.height)} id:${formatPhysicsDebugId(item.id)}`;
+    });
+  }, [physicsSnapshots, physicsTimelineSnapshot]);
+
+  const physicsViewportDebugRows = useMemo(() => {
+    if (typeof window === "undefined") {
+      return [];
+    }
+
+    const rows = [
+      `inner ${Math.round(physicsViewportSize.width)}x${Math.round(physicsViewportSize.height)}`,
+      `screen ${Math.round(window.screen.width)}x${Math.round(window.screen.height)}`,
+      `dpr ${window.devicePixelRatio.toFixed(2)}`,
+    ];
+
+    if (window.visualViewport) {
+      rows.push(
+        `visual ${Math.round(window.visualViewport.width)}x${Math.round(window.visualViewport.height)} @ ${Math.round(window.visualViewport.offsetLeft)},${Math.round(window.visualViewport.offsetTop)}`,
+      );
+    }
+
+    return rows;
+  }, [physicsViewportSize.height, physicsViewportSize.width]);
+
+  const displayedCardDebugRows = useMemo(
+    () => displayedTimeline.map((item, index) => `${index}. ${formatPhysicsDebugId(item.id)}`),
+    [displayedTimeline],
+  );
+
   const physicsPendingItems = useMemo(() => {
     if (!physicsTimelineSnapshot || physicsPendingMeasureIds.length === 0) {
       return [];
@@ -301,6 +374,25 @@ export function TimelinePanel(props: TimelinePanelProps) {
     const pendingIdSet = new Set(physicsPendingMeasureIds);
     return physicsTimelineSnapshot.filter((item) => pendingIdSet.has(item.id));
   }, [physicsPendingMeasureIds, physicsTimelineSnapshot]);
+
+  useLayoutEffect(() => {
+    if (!props.physicsEnabled) {
+      return;
+    }
+
+    setPhysicsDebugPanelPosition((current) => {
+      const next = clampPhysicsDebugPanelPosition(current);
+
+      return current.x === next.x && current.y === next.y ? current : next;
+    });
+  }, [
+    displayedCardDebugRows.length,
+    physicsBodyDebugRows.length,
+    physicsViewportSize.height,
+    physicsViewportDebugRows.length,
+    physicsViewportSize.width,
+    props.physicsEnabled,
+  ]);
 
   function teardownPhysicsWorld() {
     if (physicsFrameRef.current !== null && typeof window !== "undefined") {
@@ -315,6 +407,8 @@ export function TimelinePanel(props: TimelinePanelProps) {
 
   useEffect(() => {
     if (!props.physicsEnabled) {
+      physicsDebugDragRef.current = null;
+      setIsPhysicsDebugPanelDragging(false);
       physicsSourceViewRef.current = null;
       physicsKnownItemIdsRef.current = new Set();
       teardownPhysicsWorld();
@@ -330,7 +424,7 @@ export function TimelinePanel(props: TimelinePanelProps) {
       || physicsSourceViewRef.current !== props.timelineView
     ) {
       physicsSourceViewRef.current = props.timelineView;
-      physicsKnownItemIdsRef.current = new Set(displayedTimeline.map((item) => item.id));
+      physicsKnownItemIdsRef.current = new Set();
       teardownPhysicsWorld();
       setPhysicsTimelineSnapshot(displayedTimeline);
       setPhysicsSnapshots(null);
@@ -344,13 +438,44 @@ export function TimelinePanel(props: TimelinePanelProps) {
       !props.physicsEnabled
       || !physicsWorldReady
       || !physicsTimelineSnapshotRef.current
+      || !physicsWorldRef.current
       || physicsSourceViewRef.current !== props.timelineView
-      || physicsViewportSize.width <= 0
     ) {
       return;
     }
 
+    const displayedIdSet = new Set(displayedTimeline.map((item) => item.id));
     const currentTimeline = physicsTimelineSnapshotRef.current;
+    const currentSnapshots = physicsSnapshotsRef.current ?? [];
+    const snapshotIndexById = new Map(
+      currentTimeline.map((item, index) => [item.id, index]),
+    );
+    const retainedTimeline = currentTimeline.filter((item) => displayedIdSet.has(item.id));
+    const retainedSnapshots = retainedTimeline
+      .map((item) => {
+        const snapshotIndex = snapshotIndexById.get(item.id) ?? -1;
+
+        return snapshotIndex >= 0 ? currentSnapshots[snapshotIndex] ?? null : null;
+      })
+      .filter((snapshot): snapshot is GravityBodySnapshot => snapshot !== null);
+
+    if (retainedTimeline.length !== currentTimeline.length) {
+      physicsWorldRef.current.setBounds(
+        physicsViewportSize.width,
+        physicsViewportSize.height,
+      );
+      physicsWorldRef.current.setBodies(retainedSnapshots.map(snapshotToSeed));
+      physicsKnownItemIdsRef.current = new Set(
+        [...physicsKnownItemIdsRef.current].filter((itemId) => displayedIdSet.has(itemId)),
+      );
+      setPhysicsTimelineSnapshot(retainedTimeline);
+      setPhysicsSnapshots(retainedSnapshots);
+      setPhysicsPendingMeasureIds((current) =>
+        current.filter((itemId) => displayedIdSet.has(itemId)),
+      );
+      return;
+    }
+
     const appendedItems = displayedTimeline.filter((item) => {
       if (physicsKnownItemIdsRef.current.has(item.id)) {
         return false;
@@ -364,30 +489,39 @@ export function TimelinePanel(props: TimelinePanelProps) {
       return;
     }
 
-    const currentSnapshots = physicsSnapshotsRef.current ?? [];
-    const nextTimeline = [...currentTimeline, ...appendedItems];
-    const appendedSnapshots = appendedItems.map((item, index) => {
-      const snapshotIndex = currentTimeline.length + index;
+    const appendedTimeline = [...currentTimeline, ...appendedItems];
+    const overflowCount = Math.max(0, appendedTimeline.length - PHYSICS_MAX_ACTIVE_BODIES);
+    const nextTimeline = overflowCount > 0
+      ? appendedTimeline.slice(overflowCount)
+      : appendedTimeline;
+    const nextTimelineIdSet = new Set(nextTimeline.map((item) => item.id));
 
-      return buildPhysicsPlaceholderSnapshot(
-        snapshotIndex,
+    if (overflowCount > 0) {
+      const nextSnapshots = currentTimeline
+        .map((item, index) => ({
+          item,
+          snapshot: currentSnapshots[index] ?? null,
+        }))
+        .filter(({ item }) => nextTimelineIdSet.has(item.id))
+        .map(({ snapshot }) => snapshot)
+        .filter((snapshot): snapshot is GravityBodySnapshot => snapshot !== null);
+
+      physicsWorldRef.current.setBounds(
         physicsViewportSize.width,
-        item.id,
+        physicsViewportSize.height,
       );
-    });
-    const nextSnapshots = [...currentSnapshots, ...appendedSnapshots];
+      physicsWorldRef.current.setBodies(nextSnapshots.map(snapshotToSeed));
+      setPhysicsSnapshots(nextSnapshots);
+    }
 
-    physicsWorldRef.current?.setBounds(
-      physicsViewportSize.width,
-      physicsViewportSize.height,
-    );
-    physicsWorldRef.current?.setBodies(
-      nextSnapshots.map(snapshotToSeed),
-    );
     setPhysicsTimelineSnapshot(nextTimeline);
-    setPhysicsSnapshots(nextSnapshots);
     setPhysicsPendingMeasureIds((current) => [
-      ...new Set([...current, ...appendedItems.map((item) => item.id)]),
+      ...new Set([
+        ...current.filter((itemId) => nextTimelineIdSet.has(itemId)),
+        ...appendedItems
+          .map((item) => item.id)
+          .filter((itemId) => nextTimelineIdSet.has(itemId)),
+      ]),
     ]);
   }, [
     displayedTimeline,
@@ -448,6 +582,13 @@ export function TimelinePanel(props: TimelinePanelProps) {
     }
 
     let cancelled = false;
+    const timelinePanelRect = timelinePanelRef.current?.getBoundingClientRect();
+    const spawnBlockedRange = timelinePanelRect
+      ? {
+        start: timelinePanelRect.left,
+        end: timelinePanelRect.right,
+      }
+      : null;
 
     if (!physicsWorldReady) {
       const visibleMeasuredItems = physicsTimelineSnapshot.filter((item) => {
@@ -458,60 +599,59 @@ export function TimelinePanel(props: TimelinePanelProps) {
             && measured.y + measured.height > 0
           : true;
       });
-      const nextTimeline = visibleMeasuredItems.length > 0
+      const nextTimelineSource = visibleMeasuredItems.length > 0
         ? visibleMeasuredItems
-        : physicsTimelineSnapshot.slice(0, Math.min(8, physicsTimelineSnapshot.length));
-      const initialStartY = nextTimeline.reduce((minimum, item) => {
-        const measured = measuredById.get(item.id);
-
-        if (!measured) {
-          return minimum;
-        }
-
-        return Math.min(minimum, measured.y);
-      }, Number.POSITIVE_INFINITY);
-      const baseY = Number.isFinite(initialStartY)
-        ? Math.max(PHYSICS_NEW_ITEM_SPAWN_Y_PX, initialStartY)
-        : PHYSICS_NEW_ITEM_SPAWN_Y_PX;
-      let compactY = baseY;
+        : physicsTimelineSnapshot;
+      const nextTimeline = nextTimelineSource.slice(
+        0,
+        Math.min(PHYSICS_MAX_ACTIVE_BODIES, nextTimelineSource.length),
+      );
       const seeds = nextTimeline.map((item, index) => {
         const measured = measuredById.get(item.id);
         const width = measured?.width ?? buildPhysicsCardWidth(physicsViewportSize.width);
         const height = measured?.height ?? PHYSICS_CARD_FALLBACK_HEIGHT_PX;
         const seed = {
-          x: measured?.x ?? PHYSICS_CARD_GUTTER_PX,
-          y: compactY,
+          x: buildPhysicsSpawnX(physicsViewportSize.width, width, item.id, spawnBlockedRange),
+          y: buildPhysicsSpawnY(index, height),
           width,
           height,
-          angle: 0,
+          angle: buildPhysicsAngle(item.id),
         };
-
-        compactY += Math.max(96, height - PHYSICS_INITIAL_STACK_OVERLAP_PX);
 
         return seed;
       });
 
-      void GravityWorld.create(
-        physicsViewportSize.width,
-        physicsViewportSize.height,
-      ).then((world) => {
-        if (cancelled) {
-          return;
-        }
+      void loadGravityModule()
+        .then(({ GravityWorld }) =>
+          GravityWorld.create(
+            physicsViewportSize.width,
+            physicsViewportSize.height,
+          ),
+        )
+        .then((world) => {
+          if (cancelled) {
+            return;
+          }
 
-        world.setBodies(seeds);
-        physicsWorldRef.current = world;
-        setPhysicsTimelineSnapshot(nextTimeline);
-        setPhysicsSnapshots(seeds);
-        setPhysicsWorldReady(true);
-      });
+          world.setBodies(seeds);
+          physicsKnownItemIdsRef.current = new Set(displayedTimeline.map((item) => item.id));
+          physicsWorldRef.current = world;
+          setPhysicsTimelineSnapshot(nextTimeline);
+          setPhysicsSnapshots(seeds);
+          setPhysicsWorldReady(true);
+        });
     } else {
       const currentSnapshots = physicsSnapshotsRef.current ?? [];
       const nextSeeds = physicsTimelineSnapshot.map((item, index) => {
         const measured = measuredById.get(item.id);
         const base =
           currentSnapshots[index]
-          ?? buildPhysicsPlaceholderSnapshot(index, physicsViewportSize.width, item.id);
+          ?? buildPhysicsPlaceholderSnapshot(
+            index,
+            physicsViewportSize.width,
+            item.id,
+            spawnBlockedRange,
+          );
 
         if (!measured) {
           return snapshotToSeed(base);
@@ -522,7 +662,7 @@ export function TimelinePanel(props: TimelinePanelProps) {
           y: base.y,
           width: measured.width,
           height: measured.height,
-          angle: base.angle,
+          angle: PHYSICS_ROTATION_ENABLED ? base.angle : 0,
         };
       });
 
@@ -685,6 +825,84 @@ export function TimelinePanel(props: TimelinePanelProps) {
     event.stopPropagation();
   }
 
+  function clampPhysicsDebugPanelPosition(position: PanelPosition): PanelPosition {
+    if (typeof window === "undefined") {
+      return position;
+    }
+
+    const panelRect = physicsDebugPanelRef.current?.getBoundingClientRect();
+    const panelWidth = panelRect?.width ?? 0;
+    const panelHeight = panelRect?.height ?? 0;
+    const maxX = Math.max(
+      PHYSICS_DEBUG_PANEL_GUTTER_PX,
+      window.innerWidth - panelWidth - PHYSICS_DEBUG_PANEL_GUTTER_PX,
+    );
+    const maxY = Math.max(
+      PHYSICS_DEBUG_PANEL_GUTTER_PX,
+      window.innerHeight - panelHeight - PHYSICS_DEBUG_PANEL_GUTTER_PX,
+    );
+
+    return {
+      x: Math.round(Math.min(Math.max(PHYSICS_DEBUG_PANEL_GUTTER_PX, position.x), maxX)),
+      y: Math.round(Math.min(Math.max(PHYSICS_DEBUG_PANEL_GUTTER_PX, position.y), maxY)),
+    };
+  }
+
+  function handlePhysicsDebugPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.button !== 0) {
+      return;
+    }
+
+    const panelRect = physicsDebugPanelRef.current?.getBoundingClientRect();
+
+    if (!panelRect) {
+      return;
+    }
+
+    physicsDebugDragRef.current = {
+      pointerId: event.pointerId,
+      offsetX: event.clientX - panelRect.left,
+      offsetY: event.clientY - panelRect.top,
+    };
+    setIsPhysicsDebugPanelDragging(true);
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
+  function handlePhysicsDebugPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    const drag = physicsDebugDragRef.current;
+
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+
+    setPhysicsDebugPanelPosition((current) => {
+      const next = clampPhysicsDebugPanelPosition({
+        x: event.clientX - drag.offsetX,
+        y: event.clientY - drag.offsetY,
+      });
+
+      return current.x === next.x && current.y === next.y ? current : next;
+    });
+    event.preventDefault();
+  }
+
+  function handlePhysicsDebugPointerRelease(event: ReactPointerEvent<HTMLDivElement>) {
+    const drag = physicsDebugDragRef.current;
+
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+
+    physicsDebugDragRef.current = null;
+    setIsPhysicsDebugPanelDragging(false);
+
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }
+
   function renderTimelineCard(
     item: TimelineItem,
     options: {
@@ -695,43 +913,148 @@ export function TimelinePanel(props: TimelinePanelProps) {
       style?: CSSProperties;
     } = {},
   ) {
-    const isReactionPending = props.pendingReactionEventIds.includes(item.id);
-    const replyTargetPreviewItem = item.replyTargetEventId
-      ? referenceById.get(item.replyTargetEventId) ?? null
-      : null;
-    const replyTargetPreviewStatus = item.replyTargetEventId
-      ? props.replyPreviewStatuses[item.replyTargetEventId] ?? null
-      : null;
-
     return (
       <TimelineCard
         key={item.id}
+        canReply={props.canReply}
         canSendReaction={props.canSendReaction}
         className={options.className}
         developerModeEnabled={props.developerModeEnabled}
         isProfileImageEnabled={props.isProfileImageEnabled}
         isPublishing={props.isPublishing}
-        isReactionPending={isReactionPending}
         item={item}
         itemRef={options.itemRef}
         onCopyEventId={props.onCopyEventId}
         onPauseTimelineDisplay={pauseTimelineDisplay}
         onPointerDown={options.onPointerDown}
+        onReply={props.onReply}
         onReact={props.onReact}
         onResumeTimelineDisplay={resumeTimelineDisplay}
         onViewEventJson={props.onViewEventJson}
+        pendingReactionEventIds={props.pendingReactionEventIds}
         physicsMode={options.physicsMode}
         readyWriteRelayCount={props.readyWriteRelayCount}
-        replyTargetPreviewItem={replyTargetPreviewItem}
-        replyTargetPreviewStatus={replyTargetPreviewStatus}
+        referenceItemsById={referenceById}
+        replyPreviewStatuses={props.replyPreviewStatuses}
         style={options.style}
         timelineView={props.timelineView}
       />
     );
   }
 
+  const physicsStage =
+    physicsWorldReady
+    && physicsSnapshots !== null
+    && physicsTimelineSnapshot
+    && typeof document !== "undefined"
+      ? createPortal(
+        <div
+          ref={physicsStageRef}
+          className="timeline-physics-stage timeline-physics-stage-active"
+        >
+          <div
+            aria-hidden="true"
+            className="timeline-physics-floor-debug"
+            style={{
+              insetBlockEnd: `${PHYSICS_FLOOR_MARGIN_PX}px`,
+            }}
+          />
+          {physicsTimelineSnapshot.map((item, index) => {
+            const snapshot = physicsSnapshots[index];
+
+            if (!snapshot) {
+              return null;
+            }
+
+            return renderTimelineCard(item, {
+              className: "timeline-physics-card",
+              onPointerDown: (event) => {
+                handlePhysicsPointerDown(index, event);
+              },
+              physicsMode: true,
+              style: {
+                blockSize: `${snapshot.height}px`,
+                inlineSize: `${snapshot.width}px`,
+                transform: PHYSICS_ROTATION_ENABLED
+                  ? `translate(${snapshot.x}px, ${snapshot.y}px) rotate(${snapshot.angle}rad)`
+                  : `translate(${snapshot.x}px, ${snapshot.y}px)`,
+              },
+            });
+          })}
+        </div>,
+        document.body,
+      )
+      : null;
+
+  const physicsDebugOverlay =
+    props.physicsEnabled
+    && typeof document !== "undefined"
+      ? createPortal(
+        <aside
+          ref={physicsDebugPanelRef}
+          className={`timeline-physics-debug-panel${isPhysicsDebugPanelDragging ? " timeline-physics-debug-panel-dragging" : ""}`}
+          aria-live="polite"
+          style={{
+            insetBlockStart: `${physicsDebugPanelPosition.y}px`,
+            insetInlineStart: `${physicsDebugPanelPosition.x}px`,
+          }}
+        >
+          <div
+            className="timeline-physics-debug-handle"
+            onPointerDown={handlePhysicsDebugPointerDown}
+            onPointerMove={handlePhysicsDebugPointerMove}
+            onPointerUp={handlePhysicsDebugPointerRelease}
+            onPointerCancel={handlePhysicsDebugPointerRelease}
+          >
+            <p className="timeline-physics-debug-title">Physics Debug</p>
+            <span className="timeline-physics-debug-handle-note" aria-hidden="true">drag</span>
+          </div>
+          <p className="timeline-physics-debug-summary">
+            {`world ${physicsWorldReady ? "ready" : "pending"} / rotation ${PHYSICS_ROTATION_ENABLED ? "on" : "off"} / bodies ${physicsSnapshots?.length ?? 0} / cards ${physicsTimelineSnapshot?.length ?? 0} / displayed ${displayedTimeline.length}`}
+          </p>
+          <div className="timeline-physics-debug-section">
+            <p className="timeline-physics-debug-heading">Viewport</p>
+            {physicsViewportDebugRows.length > 0 ? (
+              <ul className="timeline-physics-debug-list">
+                {physicsViewportDebugRows.map((row) => (
+                  <li key={row}>{row}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="timeline-physics-debug-empty">No viewport</p>
+            )}
+          </div>
+          <div className="timeline-physics-debug-section">
+            <p className="timeline-physics-debug-heading">Bodies</p>
+            {physicsBodyDebugRows.length > 0 ? (
+              <ul className="timeline-physics-debug-list">
+                {physicsBodyDebugRows.map((row) => (
+                  <li key={row}>{row}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="timeline-physics-debug-empty">No bodies</p>
+            )}
+          </div>
+          <div className="timeline-physics-debug-section">
+            <p className="timeline-physics-debug-heading">Displayed</p>
+            {displayedCardDebugRows.length > 0 ? (
+              <ul className="timeline-physics-debug-list">
+                {displayedCardDebugRows.map((row) => (
+                  <li key={row}>{row}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="timeline-physics-debug-empty">No cards</p>
+            )}
+          </div>
+        </aside>,
+        document.body,
+      )
+      : null;
+
   return (
-    <section className="panel">
+    <section ref={timelinePanelRef} className="panel">
       <div className="section-heading">
         <h2 className="section-chip timeline-heading-chip">{props.timelineHeadingLabel}</h2>
         <div className="view-switcher" role="group" aria-label="タイムライン切替">
@@ -863,32 +1186,8 @@ export function TimelinePanel(props: TimelinePanelProps) {
             </ul>
           ) : null}
 
-          {physicsWorldReady && physicsSnapshots !== null && physicsTimelineSnapshot ? (
-            <div
-              ref={physicsStageRef}
-              className="timeline-physics-stage timeline-physics-stage-active"
-            >
-              {physicsTimelineSnapshot.map((item, index) => {
-                const snapshot = physicsSnapshots[index];
-
-                if (!snapshot) {
-                  return null;
-                }
-
-                return renderTimelineCard(item, {
-                  className: "timeline-physics-card",
-                  onPointerDown: (event) => {
-                    handlePhysicsPointerDown(index, event);
-                  },
-                  physicsMode: true,
-                  style: {
-                    inlineSize: `${snapshot.width}px`,
-                    transform: `translate(${snapshot.x}px, ${snapshot.y}px) rotate(${snapshot.angle}rad)`,
-                  },
-                });
-              })}
-            </div>
-          ) : null}
+          {physicsStage}
+          {physicsDebugOverlay}
         </>
       ) : (
         <ul className="list">
@@ -907,35 +1206,136 @@ function buildPhysicsPlaceholderSnapshot(
   index: number,
   viewportWidth: number,
   itemId: string,
+  blockedRange: PhysicsSpawnBlockedRange | null,
 ): GravityBodySnapshot {
   const width = buildPhysicsCardWidth(viewportWidth);
-  const lane = index % 3;
-  const centeredX = (viewportWidth - width) / 2;
-  const x = Math.max(
-    PHYSICS_CARD_GUTTER_PX,
-    Math.min(
-      viewportWidth - width - PHYSICS_CARD_GUTTER_PX,
-      centeredX + (lane - 1) * 24,
-    ),
-  );
+  const x = buildPhysicsSpawnX(viewportWidth, width, itemId, blockedRange);
 
   return {
     x,
-    y: -PHYSICS_CARD_FALLBACK_HEIGHT_PX - (index % 3) * 18,
+    y: buildPhysicsSpawnY(index, PHYSICS_CARD_FALLBACK_HEIGHT_PX),
     width,
     height: PHYSICS_CARD_FALLBACK_HEIGHT_PX,
-    angle: hashPhysicsAngle(itemId),
+    angle: buildPhysicsAngle(itemId),
   };
 }
 
+function buildPhysicsSpawnX(
+  viewportWidth: number,
+  width: number,
+  itemId: string,
+  blockedRange: PhysicsSpawnBlockedRange | null = null,
+) {
+  const minX = PHYSICS_CARD_GUTTER_PX;
+  const maxX = Math.max(minX, viewportWidth - width - PHYSICS_CARD_GUTTER_PX);
+  const intervals = buildPhysicsSpawnIntervals(minX, maxX, width, blockedRange);
+  const totalSpan = intervals.reduce((sum, interval) => sum + interval.span, 0);
+
+  if (intervals.length === 0 || totalSpan <= 0) {
+    return minX;
+  }
+
+  const laneSeed = hashPhysicsSeed(`${itemId}:lane`) / 997;
+  let spanOffset = totalSpan * laneSeed;
+  let selectedInterval = intervals[intervals.length - 1];
+
+  for (const interval of intervals) {
+    if (spanOffset <= interval.span) {
+      selectedInterval = interval;
+      break;
+    }
+
+    spanOffset -= interval.span;
+  }
+
+  const laneBaseX = selectedInterval.start + Math.min(spanOffset, selectedInterval.span);
+  const jitterSeed = hashPhysicsSeed(`${itemId}:spawn`);
+  const jitterRange = Math.min(PHYSICS_SPAWN_X_JITTER_PX, selectedInterval.span * 0.2);
+  const jitter = intervals.length > 1 || selectedInterval.span > 0
+    ? ((jitterSeed % 11) - 5) * (jitterRange / 5)
+    : 0;
+
+  return Math.max(
+    selectedInterval.start,
+    Math.min(selectedInterval.end, laneBaseX + jitter),
+  );
+}
+
+function buildPhysicsSpawnIntervals(
+  minX: number,
+  maxX: number,
+  width: number,
+  blockedRange: PhysicsSpawnBlockedRange | null,
+) {
+  if (!blockedRange) {
+    return [{ start: minX, end: maxX, span: Math.max(0, maxX - minX) }];
+  }
+
+  const leftEnd = Math.min(
+    maxX,
+    blockedRange.start - width - PHYSICS_CARD_GUTTER_PX,
+  );
+  const rightStart = Math.max(
+    minX,
+    blockedRange.end + PHYSICS_CARD_GUTTER_PX,
+  );
+  const intervals: Array<{ start: number; end: number; span: number }> = [];
+
+  if (leftEnd >= minX) {
+    intervals.push({
+      start: minX,
+      end: leftEnd,
+      span: Math.max(0, leftEnd - minX),
+    });
+  }
+
+  if (maxX >= rightStart) {
+    intervals.push({
+      start: rightStart,
+      end: maxX,
+      span: Math.max(0, maxX - rightStart),
+    });
+  }
+
+  return intervals.length > 0
+    ? intervals
+    : [{ start: minX, end: maxX, span: Math.max(0, maxX - minX) }];
+}
+
+function buildPhysicsSpawnY(index: number, height: number) {
+  const compactOffset = Math.min(
+    index * PHYSICS_TOP_SPAWN_STEP_PX,
+    Math.max(0, height - PHYSICS_INITIAL_STACK_OVERLAP_PX),
+  );
+
+  return -height - PHYSICS_TOP_SPAWN_PADDING_PX - compactOffset;
+}
+
+function buildPhysicsAngle(itemId: string) {
+  return PHYSICS_ROTATION_ENABLED ? hashPhysicsAngle(itemId) : 0;
+}
+
 function hashPhysicsAngle(itemId: string) {
+  const hash = hashPhysicsSeed(itemId);
+  return ((hash % 21) - 10) * 0.01;
+}
+
+function hashPhysicsSeed(itemId: string) {
   let hash = 0;
 
   for (let index = 0; index < itemId.length; index += 1) {
     hash = (hash * 33 + itemId.charCodeAt(index)) % 997;
   }
 
-  return ((hash % 21) - 10) * 0.01;
+  return hash;
+}
+
+function formatPhysicsDebugId(itemId: string) {
+  return itemId.length <= 12 ? itemId : `${itemId.slice(0, 12)}...`;
+}
+
+function formatPhysicsDebugNumber(value: number) {
+  return Math.round(value).toString();
 }
 
 function snapshotToSeed(snapshot: GravityBodySnapshot): GravityBodySeed {
@@ -944,7 +1344,7 @@ function snapshotToSeed(snapshot: GravityBodySnapshot): GravityBodySeed {
     y: snapshot.y,
     width: snapshot.width,
     height: snapshot.height,
-    angle: snapshot.angle,
+    angle: PHYSICS_ROTATION_ENABLED ? snapshot.angle : 0,
   };
 }
 

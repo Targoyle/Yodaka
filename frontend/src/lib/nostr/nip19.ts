@@ -11,6 +11,10 @@ export function encodeNpub(hex: string) {
   return encodeKey("npub", hex);
 }
 
+export function encodeNote(hex: string) {
+  return encodeKey("note", hex);
+}
+
 export function encodeNsec(hex: string) {
   return encodeKey("nsec", hex);
 }
@@ -33,6 +37,10 @@ function encodeKey(hrp: string, hex: string) {
 
 export function decodeNpub(value: string) {
   return decodeKey("npub", value);
+}
+
+export function decodeNote(value: string) {
+  return decodeKey("note", value);
 }
 
 export function decodeNsec(value: string) {
@@ -78,13 +86,7 @@ export function encodeNevent(eventIdHex: string) {
 }
 
 export function decodeNevent(value: string) {
-  const decoded = bech32Decode(value, "nevent");
-
-  if (!decoded || decoded.hrp !== "nevent") {
-    return null;
-  }
-
-  const bytes = convertBits(new Uint8Array(decoded.data), 5, 8, false);
+  const bytes = decodeTlvBytes(value, "nevent");
 
   if (!bytes) {
     return null;
@@ -133,6 +135,96 @@ export function decodeNevent(value: string) {
   };
 }
 
+export function decodeNprofile(value: string) {
+  const bytes = decodeTlvBytes(value, "nprofile");
+
+  if (!bytes) {
+    return null;
+  }
+
+  let pubkey: string | null = null;
+  const relayUrls: string[] = [];
+  let offset = 0;
+
+  while (offset + 2 <= bytes.length) {
+    const tlv = readTlvEntry(bytes, offset);
+
+    if (!tlv) {
+      return null;
+    }
+
+    if (tlv.type === 0 && tlv.value.length === 32) {
+      pubkey = bytesToHex(tlv.value);
+    } else if (tlv.type === 1 && tlv.value.length > 0) {
+      const relayUrl = decodeUtf8(tlv.value).trim();
+
+      if (relayUrl.length > 0) {
+        relayUrls.push(relayUrl);
+      }
+    }
+
+    offset = tlv.nextOffset;
+  }
+
+  if (!pubkey) {
+    return null;
+  }
+
+  return {
+    pubkey,
+    relayUrls,
+  };
+}
+
+export function decodeNaddr(value: string) {
+  const bytes = decodeTlvBytes(value, "naddr");
+
+  if (!bytes) {
+    return null;
+  }
+
+  let identifier: string | null = null;
+  let pubkey: string | null = null;
+  let kind: number | null = null;
+  const relayUrls: string[] = [];
+  let offset = 0;
+
+  while (offset + 2 <= bytes.length) {
+    const tlv = readTlvEntry(bytes, offset);
+
+    if (!tlv) {
+      return null;
+    }
+
+    if (tlv.type === 0 && tlv.value.length > 0) {
+      identifier = decodeUtf8(tlv.value);
+    } else if (tlv.type === 1 && tlv.value.length > 0) {
+      const relayUrl = decodeUtf8(tlv.value).trim();
+
+      if (relayUrl.length > 0) {
+        relayUrls.push(relayUrl);
+      }
+    } else if (tlv.type === 2 && tlv.value.length === 32) {
+      pubkey = bytesToHex(tlv.value);
+    } else if (tlv.type === 3 && tlv.value.length === 4) {
+      kind = bytesToUint32(tlv.value);
+    }
+
+    offset = tlv.nextOffset;
+  }
+
+  if (!identifier || !pubkey || kind === null) {
+    return null;
+  }
+
+  return {
+    identifier,
+    pubkey,
+    kind,
+    relayUrls,
+  };
+}
+
 function encodeTlv(
   entries: Array<{
     type: number;
@@ -154,6 +246,35 @@ function encodeTlv(
   }
 
   return bytes;
+}
+
+function decodeTlvBytes(value: string, expectedHrp: string) {
+  const decoded = bech32Decode(value, expectedHrp);
+
+  if (!decoded || decoded.hrp !== expectedHrp) {
+    return null;
+  }
+
+  const bytes = convertBits(new Uint8Array(decoded.data), 5, 8, false);
+
+  return bytes ? Uint8Array.from(bytes) : null;
+}
+
+function readTlvEntry(bytes: Uint8Array, offset: number) {
+  const type = bytes[offset];
+  const length = bytes[offset + 1];
+  const valueStart = offset + 2;
+  const valueEnd = valueStart + length;
+
+  if (valueEnd > bytes.length) {
+    return null;
+  }
+
+  return {
+    type,
+    value: bytes.slice(valueStart, valueEnd),
+    nextOffset: valueEnd,
+  };
 }
 
 function hexToBytes(hex: string) {
@@ -312,4 +433,13 @@ function bytesToHex(bytes: ArrayLike<number>) {
   return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join(
     "",
   );
+}
+
+function bytesToUint32(bytes: Uint8Array) {
+  return (
+    (bytes[0] << 24)
+    | (bytes[1] << 16)
+    | (bytes[2] << 8)
+    | bytes[3]
+  ) >>> 0;
 }

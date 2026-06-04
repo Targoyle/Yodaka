@@ -3,14 +3,18 @@ use serde::{Deserialize, Serialize};
 const GRAVITY_PX_PER_SEC2: f32 = 2200.0;
 const LINEAR_DAMPING: f32 = 0.996;
 const ANGULAR_DAMPING: f32 = 0.992;
-const FLOOR_RESTITUTION: f32 = 0.32;
-const BODY_RESTITUTION: f32 = 0.18;
+const ROTATION_ENABLED: bool = false;
+const FLOOR_RESTITUTION: f32 = 0.0;
+const BODY_RESTITUTION: f32 = 0.0;
 const MAX_STEP_SEC: f32 = 1.0 / 30.0;
 const DRAG_LERP: f32 = 0.45;
 const DRAG_VELOCITY_GAIN: f32 = 20.0;
 const FLOOR_MARGIN_PX: f32 = 2.0;
-const BODY_COLLISION_SHRINK_RIGHT_PX: f32 = 30.0;
-const BODY_COLLISION_SHRINK_BOTTOM_PX: f32 = 34.0;
+const BODY_COLLIDER_INSET_PX: f32 = 0.0;
+const CONSTRAINT_SOLVER_ITERATIONS: usize = 10;
+const MIN_COLLIDER_HALF_EXTENT_PX: f32 = 0.5;
+const FLOOR_REST_VELOCITY_EPS: f32 = 48.0;
+const BODY_REST_VELOCITY_EPS: f32 = 24.0;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct PhysicsBodySeed {
@@ -51,6 +55,83 @@ struct DragState {
     offset_y: f32,
     velocity_x: f32,
     velocity_y: f32,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct Vec2 {
+    x: f32,
+    y: f32,
+}
+
+impl Vec2 {
+    const fn new(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
+
+    fn dot(self, other: Self) -> f32 {
+        self.x * other.x + self.y * other.y
+    }
+
+    fn scale(self, value: f32) -> Self {
+        Self::new(self.x * value, self.y * value)
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Clone, Copy, Debug)]
+struct Aabb {
+    min_x: f32,
+    min_y: f32,
+    max_x: f32,
+    max_y: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct OrientedRect {
+    center: Vec2,
+    half_extents: Vec2,
+    axis_x: Vec2,
+    axis_y: Vec2,
+}
+
+impl OrientedRect {
+    fn from_body(body: &PhysicsBody, inset_px: f32) -> Self {
+        let half_width = (body.width / 2.0 - inset_px).max(MIN_COLLIDER_HALF_EXTENT_PX);
+        let half_height = (body.height / 2.0 - inset_px).max(MIN_COLLIDER_HALF_EXTENT_PX);
+        let (sin_angle, cos_angle) = body.angle.sin_cos();
+
+        Self {
+            center: Vec2::new(body.x + body.width / 2.0, body.y + body.height / 2.0),
+            half_extents: Vec2::new(half_width, half_height),
+            axis_x: Vec2::new(cos_angle, sin_angle),
+            axis_y: Vec2::new(-sin_angle, cos_angle),
+        }
+    }
+
+    fn project_radius(self, axis: Vec2) -> f32 {
+        self.half_extents.x * self.axis_x.dot(axis).abs()
+            + self.half_extents.y * self.axis_y.dot(axis).abs()
+    }
+
+    fn aabb(self) -> Aabb {
+        let extent_x =
+            self.axis_x.x.abs() * self.half_extents.x + self.axis_y.x.abs() * self.half_extents.y;
+        let extent_y =
+            self.axis_x.y.abs() * self.half_extents.x + self.axis_y.y.abs() * self.half_extents.y;
+
+        Aabb {
+            min_x: self.center.x - extent_x,
+            max_x: self.center.x + extent_x,
+            min_y: self.center.y - extent_y,
+            max_y: self.center.y + extent_y,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CollisionManifold {
+    normal: Vec2,
+    penetration: f32,
 }
 
 #[derive(Default)]
@@ -96,21 +177,23 @@ impl PhysicsWorld {
     pub fn step(&mut self, dt_ms: f32) -> Vec<PhysicsBodySnapshot> {
         let dt = (dt_ms / 1000.0).clamp(0.0, MAX_STEP_SEC);
 
-        if dt <= 0.0 {
-            return self.snapshots();
-        }
-
         for index in 0..self.bodies.len() {
             if self.drag.as_ref().is_some_and(|drag| drag.index == index) {
                 self.step_dragged_body(index, dt);
-            } else {
+            } else if dt > 0.0 {
                 self.step_free_body(index, dt);
             }
 
             self.resolve_world_bounds(index);
         }
 
-        self.resolve_body_collisions();
+        for _ in 0..CONSTRAINT_SOLVER_ITERATIONS {
+            self.resolve_body_collisions();
+
+            for index in 0..self.bodies.len() {
+                self.resolve_world_bounds(index);
+            }
+        }
 
         self.snapshots()
     }
@@ -151,7 +234,13 @@ impl PhysicsWorld {
         if let Some(body) = self.bodies.get_mut(drag.index) {
             body.vx += drag.velocity_x * DRAG_VELOCITY_GAIN;
             body.vy += drag.velocity_y * DRAG_VELOCITY_GAIN;
-            body.angular_velocity += drag.velocity_x * 0.06;
+
+            if !ROTATION_ENABLED {
+                body.angle = 0.0;
+                body.angular_velocity = 0.0;
+            } else {
+                body.angular_velocity += drag.velocity_x * 0.06;
+            }
         }
     }
 
@@ -173,10 +262,16 @@ impl PhysicsWorld {
         body.vy += GRAVITY_PX_PER_SEC2 * dt;
         body.x += body.vx * dt;
         body.y += body.vy * dt;
-        body.angle += body.angular_velocity * dt;
         body.vx *= LINEAR_DAMPING;
         body.vy *= LINEAR_DAMPING;
-        body.angular_velocity *= ANGULAR_DAMPING;
+
+        if !ROTATION_ENABLED {
+            body.angle = 0.0;
+            body.angular_velocity = 0.0;
+        } else {
+            body.angle += body.angular_velocity * dt;
+            body.angular_velocity *= ANGULAR_DAMPING;
+        }
     }
 
     fn step_dragged_body(&mut self, index: usize, dt: f32) {
@@ -194,20 +289,37 @@ impl PhysicsWorld {
         body.y += delta_y * DRAG_LERP;
         body.vx = (delta_x / dt.max(0.001)) * 0.12;
         body.vy = (delta_y / dt.max(0.001)) * 0.12;
-        body.angular_velocity = drag.velocity_x * 0.08;
-        body.angle += body.angular_velocity * dt;
+
+        if !ROTATION_ENABLED {
+            body.angle = 0.0;
+            body.angular_velocity = 0.0;
+        } else {
+            body.angular_velocity = drag.velocity_x * 0.08;
+            body.angle += body.angular_velocity * dt;
+        }
     }
 
     fn resolve_world_bounds(&mut self, index: usize) {
         let body = &mut self.bodies[index];
         let floor_y = (self.height - FLOOR_MARGIN_PX).max(0.0);
-        let effective_height = (body.height - BODY_COLLISION_SHRINK_BOTTOM_PX).max(1.0);
+        let aabb = visual_rect(body).aabb();
 
-        if body.y + effective_height > floor_y {
-            body.y = (floor_y - effective_height).max(0.0);
-            body.vy = -body.vy.abs() * FLOOR_RESTITUTION;
+        if aabb.max_y > floor_y {
+            body.y -= aabb.max_y - floor_y;
+
+            if body.vy > 0.0 {
+                body.vy = -body.vy * FLOOR_RESTITUTION;
+            }
+
             body.vx *= 0.94;
-            body.angular_velocity *= 0.9;
+            clamp_velocity(body, FLOOR_REST_VELOCITY_EPS);
+
+            if !ROTATION_ENABLED {
+                body.angle = 0.0;
+                body.angular_velocity = 0.0;
+            } else {
+                body.angular_velocity *= 0.9;
+            }
         }
     }
 
@@ -216,7 +328,10 @@ impl PhysicsWorld {
 
         for left_index in 0..len {
             for right_index in (left_index + 1)..len {
-                let left_dragged = self.drag.as_ref().is_some_and(|drag| drag.index == left_index);
+                let left_dragged = self
+                    .drag
+                    .as_ref()
+                    .is_some_and(|drag| drag.index == left_index);
                 let right_dragged = self
                     .drag
                     .as_ref()
@@ -225,54 +340,33 @@ impl PhysicsWorld {
                     continue;
                 };
 
-                let left_collision_x = left.x;
-                let left_collision_y = left.y;
-                let left_collision_width = (left.width - BODY_COLLISION_SHRINK_RIGHT_PX).max(1.0);
-                let left_collision_height =
-                    (left.height - BODY_COLLISION_SHRINK_BOTTOM_PX).max(1.0);
-
-                let right_collision_x = right.x;
-                let right_collision_y = right.y;
-                let right_collision_width =
-                    (right.width - BODY_COLLISION_SHRINK_RIGHT_PX).max(1.0);
-                let right_collision_height =
-                    (right.height - BODY_COLLISION_SHRINK_BOTTOM_PX).max(1.0);
-
-                let overlap_x = (left_collision_x + left_collision_width)
-                    .min(right_collision_x + right_collision_width)
-                    - left_collision_x.max(right_collision_x);
-                let overlap_y = (left_collision_y + left_collision_height)
-                    .min(right_collision_y + right_collision_height)
-                    - left_collision_y.max(right_collision_y);
-
-                if overlap_x <= 0.0 || overlap_y <= 0.0 {
+                let Some(collision) = compute_body_collision(left, right) else {
                     continue;
+                };
+                let correction = collision.normal.scale(collision.penetration);
+
+                match (left_dragged, right_dragged) {
+                    (false, false) => {
+                        translate_body(left, correction.scale(-0.5));
+                        translate_body(right, correction.scale(0.5));
+                    }
+                    (true, false) => {
+                        translate_body(right, correction);
+                    }
+                    (false, true) => {
+                        translate_body(left, correction.scale(-1.0));
+                    }
+                    (true, true) => continue,
                 }
 
-                if overlap_x < overlap_y {
-                    let push = overlap_x / 2.0;
+                if !left_dragged {
+                    reflect_velocity(left, collision.normal.scale(-1.0));
+                    clamp_velocity(left, BODY_REST_VELOCITY_EPS);
+                }
 
-                    if !left_dragged {
-                        left.x -= push;
-                        left.vx = -left.vx * BODY_RESTITUTION;
-                    }
-
-                    if !right_dragged {
-                        right.x += push;
-                        right.vx = -right.vx * BODY_RESTITUTION;
-                    }
-                } else {
-                    let push = overlap_y / 2.0;
-
-                    if !left_dragged {
-                        left.y -= push;
-                        left.vy = -left.vy * BODY_RESTITUTION;
-                    }
-
-                    if !right_dragged {
-                        right.y += push;
-                        right.vy = -right.vy * BODY_RESTITUTION;
-                    }
+                if !right_dragged {
+                    reflect_velocity(right, collision.normal);
+                    clamp_velocity(right, BODY_REST_VELOCITY_EPS);
                 }
             }
         }
@@ -283,7 +377,9 @@ impl PhysicsWorld {
         left_index: usize,
         right_index: usize,
     ) -> Option<(&mut PhysicsBody, &mut PhysicsBody)> {
-        if left_index == right_index || left_index >= self.bodies.len() || right_index >= self.bodies.len()
+        if left_index == right_index
+            || left_index >= self.bodies.len()
+            || right_index >= self.bodies.len()
         {
             return None;
         }
@@ -293,9 +389,103 @@ impl PhysicsWorld {
     }
 }
 
+fn compute_body_collision(left: &PhysicsBody, right: &PhysicsBody) -> Option<CollisionManifold> {
+    let left_rect = collision_rect(left);
+    let right_rect = collision_rect(right);
+    let center_delta = Vec2::new(
+        right_rect.center.x - left_rect.center.x,
+        right_rect.center.y - left_rect.center.y,
+    );
+    let axes = [
+        left_rect.axis_x,
+        left_rect.axis_y,
+        right_rect.axis_x,
+        right_rect.axis_y,
+    ];
+    let mut best_normal = left_rect.axis_x;
+    let mut best_penetration = f32::INFINITY;
+
+    for axis in axes {
+        let distance = center_delta.dot(axis);
+        let overlap =
+            left_rect.project_radius(axis) + right_rect.project_radius(axis) - distance.abs();
+
+        if overlap <= 0.0 {
+            return None;
+        }
+
+        if overlap < best_penetration {
+            best_penetration = overlap;
+            best_normal = if distance < 0.0 {
+                axis.scale(-1.0)
+            } else {
+                axis
+            };
+        }
+    }
+
+    Some(CollisionManifold {
+        normal: best_normal,
+        penetration: best_penetration,
+    })
+}
+
+fn collision_rect(body: &PhysicsBody) -> OrientedRect {
+    OrientedRect::from_body(body, BODY_COLLIDER_INSET_PX)
+}
+
+fn visual_rect(body: &PhysicsBody) -> OrientedRect {
+    OrientedRect::from_body(body, 0.0)
+}
+
+fn translate_body(body: &mut PhysicsBody, delta: Vec2) {
+    body.x += delta.x;
+    body.y += delta.y;
+}
+
+fn reflect_velocity(body: &mut PhysicsBody, outward_normal: Vec2) {
+    let velocity_along_normal = body.vx * outward_normal.x + body.vy * outward_normal.y;
+
+    if velocity_along_normal >= 0.0 {
+        return;
+    }
+
+    let impulse_scale = velocity_along_normal * (1.0 + BODY_RESTITUTION);
+    body.vx -= outward_normal.x * impulse_scale;
+    body.vy -= outward_normal.y * impulse_scale;
+}
+
+fn clamp_velocity(body: &mut PhysicsBody, epsilon: f32) {
+    if body.vx.abs() < epsilon {
+        body.vx = 0.0;
+    }
+
+    if body.vy.abs() < epsilon {
+        body.vy = 0.0;
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{PhysicsBodySeed, PhysicsWorld};
+    use core::f32::consts::FRAC_PI_4;
+
+    use super::{
+        FLOOR_MARGIN_PX, PhysicsBody, PhysicsBodySeed, PhysicsWorld, compute_body_collision,
+        visual_rect,
+    };
+
+    fn build_body(x: f32, y: f32, width: f32, height: f32, angle: f32) -> PhysicsBody {
+        PhysicsBody {
+            x,
+            y,
+            width,
+            height,
+            angle,
+            vx: 0.0,
+            vy: 0.0,
+            angular_velocity: 0.0,
+        }
+    }
 
     #[test]
     fn gravity_moves_body_downward() {
@@ -312,5 +502,111 @@ mod tests {
         let after = world.step(16.0)[0].y;
 
         assert!(after > before);
+    }
+
+    #[test]
+    fn zero_dt_step_moves_dragged_body() {
+        let mut world = PhysicsWorld::new(400.0, 400.0);
+        world.set_bodies(vec![PhysicsBodySeed {
+            x: 24.0,
+            y: 40.0,
+            width: 120.0,
+            height: 96.0,
+            angle: 0.0,
+        }]);
+        let before = world.snapshots()[0].x;
+
+        assert!(world.pointer_down(0, 40.0, 56.0));
+        world.pointer_move(180.0, 160.0);
+
+        let after = world.step(0.0)[0].x;
+
+        assert!(after > before);
+    }
+
+    #[test]
+    fn rotated_rectangles_do_not_collide_when_only_aabbs_overlap() {
+        let left = build_body(0.0, 0.0, 100.0, 100.0, FRAC_PI_4);
+        let right = build_body(55.0, 120.0, 100.0, 100.0, 0.0);
+
+        assert!(compute_body_collision(&left, &right).is_none());
+    }
+
+    #[test]
+    fn floor_collision_uses_rotated_visual_bounds() {
+        let mut world = PhysicsWorld::new(220.0, 160.0);
+        world.set_bodies(vec![PhysicsBodySeed {
+            x: 48.0,
+            y: 90.0,
+            width: 100.0,
+            height: 100.0,
+            angle: FRAC_PI_4,
+        }]);
+
+        world.resolve_world_bounds(0);
+
+        let floor_y = world.height - FLOOR_MARGIN_PX;
+        let body = &world.bodies[0];
+        let aabb = visual_rect(body).aabb();
+
+        assert!(aabb.max_y <= floor_y + 0.01);
+        assert!(aabb.min_x < aabb.max_x);
+        assert!(aabb.min_y < aabb.max_y);
+    }
+
+    #[test]
+    fn stacked_bodies_remain_above_floor_after_many_steps() {
+        let mut world = PhysicsWorld::new(360.0, 320.0);
+        world.set_bodies(vec![
+            PhysicsBodySeed {
+                x: 96.0,
+                y: -240.0,
+                width: 180.0,
+                height: 140.0,
+                angle: -0.08,
+            },
+            PhysicsBodySeed {
+                x: 104.0,
+                y: -420.0,
+                width: 180.0,
+                height: 160.0,
+                angle: 0.05,
+            },
+            PhysicsBodySeed {
+                x: 92.0,
+                y: -620.0,
+                width: 180.0,
+                height: 180.0,
+                angle: -0.03,
+            },
+        ]);
+
+        for _ in 0..240 {
+            world.step(16.0);
+        }
+
+        let floor_y = world.height - FLOOR_MARGIN_PX;
+
+        for body in &world.bodies {
+            let aabb = visual_rect(body).aabb();
+
+            assert!(aabb.max_y <= floor_y + 0.01);
+        }
+    }
+
+    #[test]
+    fn rotation_disabled_keeps_angles_zero_after_step() {
+        let mut world = PhysicsWorld::new(320.0, 320.0);
+        world.set_bodies(vec![PhysicsBodySeed {
+            x: 24.0,
+            y: 24.0,
+            width: 120.0,
+            height: 96.0,
+            angle: FRAC_PI_4,
+        }]);
+
+        let snapshot = world.step(16.0);
+
+        assert_eq!(snapshot[0].angle, 0.0);
     }
 }

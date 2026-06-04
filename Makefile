@@ -3,8 +3,10 @@ SHELL := /bin/bash
 ROOT_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 FRONTEND_DIR := $(ROOT_DIR)/frontend
 NOSTR_WASM_DIR := $(ROOT_DIR)/rust/crates/nostr_wasm
+NOSTR_PHYSICS_WASM_DIR := $(ROOT_DIR)/rust/crates/nostr_physics_wasm
 NOSTR_MINER_WASM_DIR := $(ROOT_DIR)/rust/crates/nostr_miner_wasm
 NOSTR_WASM_OUT_DIR := $(FRONTEND_DIR)/src/wasm/pkg
+NOSTR_PHYSICS_WASM_OUT_DIR := $(FRONTEND_DIR)/src/physics_wasm/pkg
 NOSTR_MINER_WASM_OUT_DIR := $(FRONTEND_DIR)/src/miner_wasm/pkg
 
 .PHONY: help install wasm dev preview dist check xss
@@ -24,6 +26,7 @@ install:
 
 wasm:
 	cd "$(NOSTR_WASM_DIR)" && wasm-pack build --target web --release --out-dir "$(NOSTR_WASM_OUT_DIR)"
+	cd "$(NOSTR_PHYSICS_WASM_DIR)" && wasm-pack build --target web --release --out-dir "$(NOSTR_PHYSICS_WASM_OUT_DIR)"
 	cd "$(NOSTR_MINER_WASM_DIR)" && wasm-pack build --target web --release --out-dir "$(NOSTR_MINER_WASM_OUT_DIR)"
 
 dev: wasm

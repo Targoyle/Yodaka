@@ -1,5 +1,5 @@
 [package]
-name = "nostr_miner_wasm"
+name = "nostr_physics_wasm"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,8 +13,7 @@ wasm-opt = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-nostr_miner_core = { path = "../nostr_miner_core" }
-serde.workspace = true
+nostr_core = { path = "../nostr_core" }
 serde_json.workspace = true
 wasm-bindgen.workspace = true
 

@@ -3,8 +3,11 @@ import { describe, expect, it } from "vitest";
 import { encodeNpub } from "./nip19";
 import { extractProfileLookupPubkeysFromEvent } from "./profileLookup";
 
+const SAMPLE_NPROFILE =
+  "nprofile1qqszclxx9f5haga8sfjjrulaxncvkfekj097t6f3pu65f86rvg49ehqj6f9dh";
+
 describe("extractProfileLookupPubkeysFromEvent", () => {
-  it("author, p/e/a tag, npub mention をまとめて抽出する", () => {
+  it("author, p/e/a tag, npub/nprofile mention をまとめて抽出する", () => {
     const author = "a".repeat(64);
     const pTagged = "b".repeat(64);
     const eTaggedAuthor = "c".repeat(64);
@@ -24,7 +27,7 @@ describe("extractProfileLookupPubkeysFromEvent", () => {
         ["e", "1".repeat(64), "", "reply", eTaggedAuthor],
         ["a", `30023:${aTaggedAuthor}:identifier`],
       ],
-      content: `nostr:${mentionedNpub}`,
+      content: `nostr:${mentionedNpub} nostr:${SAMPLE_NPROFILE}`,
       sig: "9".repeat(128),
     });
 
@@ -34,6 +37,7 @@ describe("extractProfileLookupPubkeysFromEvent", () => {
       eTaggedAuthor,
       aTaggedAuthor,
       mentioned,
+      "2c7cc62a697ea3a7826521f3fd34f0cb273693cbe5e9310f35449f43622a5cdc",
     ]);
   });
 
