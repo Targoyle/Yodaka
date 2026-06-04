@@ -157,8 +157,9 @@ export function usePublish(args: UsePublishArgs) {
         );
       }
 
+      args.rememberLocalPublishedTextNote(relayEvent);
+
       if (inserted) {
-        args.rememberLocalPublishedTextNote(relayEvent);
         await args.refreshSnapshotRef.current();
       } else {
         args.scheduleRefreshRef.current();
