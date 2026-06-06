@@ -29,6 +29,7 @@ import {
 import {
   formatPublishSuccessMessage,
   formatReactionSuccessMessage,
+  formatRepostSuccessMessage,
 } from "../lib/ui/formatters";
 
 type UsePublishArgs = {
@@ -38,15 +39,18 @@ type UsePublishArgs = {
   createActiveSigner: () => NostrSigner | null;
   ensureSignerPubkey: () => Promise<string>;
   markSignerUnavailable: () => void;
-  rememberLocalPublishedTextNote: (event: NostrEvent) => void;
-  rememberLocalReactionTarget: (item: TimelineItem) => void;
+  rememberLocalPublishedEvent: (event: NostrEvent) => void;
+  rememberLocalReactionTarget: (
+    item: TimelineItem,
+    reactionIntent: ReactionIntent,
+  ) => void;
   referenceItemsById: ReadonlyMap<string, TimelineItem>;
   queueProfileLookupRef: MutableRefObject<(pubkey: string) => void>;
   refreshSnapshotRef: MutableRefObject<() => Promise<TimelineItem[] | null>>;
   relayCoordinatorRef: MutableRefObject<RelayCoordinator | null>;
   requestSignerPubkeyFromUserGesture: () => Promise<string | null>;
   scheduleRefreshRef: MutableRefObject<() => void>;
-  selectReactionRelayHint: () => string | null;
+  selectReferenceRelayHint: () => string | null;
   signerPubkey: string | null;
   viewerPubkey: string | null;
   writeRelayUrls: string[];
@@ -56,6 +60,9 @@ export function usePublish(args: UsePublishArgs) {
   const [draftContent, setDraftContent] = useState("");
   const [isPublishing, setIsPublishing] = useState(false);
   const [pendingReactionEventIds, setPendingReactionEventIds] = useState<string[]>([]);
+  const [pendingReactionIntentsByEventId, setPendingReactionIntentsByEventId] = useState<
+    Record<string, ReactionIntent>
+  >({});
   const [publishMessage, setPublishMessage] = useState<string | null>(null);
   const [publishError, setPublishError] = useState<string | null>(null);
   const [replyTargetDraftItem, setReplyTargetDraftItem] = useState<TimelineItem | null>(null);
@@ -157,7 +164,7 @@ export function usePublish(args: UsePublishArgs) {
         );
       }
 
-      args.rememberLocalPublishedTextNote(relayEvent);
+      args.rememberLocalPublishedEvent(relayEvent);
 
       if (inserted) {
         await args.refreshSnapshotRef.current();
@@ -165,18 +172,7 @@ export function usePublish(args: UsePublishArgs) {
         args.scheduleRefreshRef.current();
       }
 
-      for (const relayUrl of publishResult.acceptedRelayUrls) {
-        try {
-          await persistAcceptedEvent({
-            relayUrl,
-            event: relayEvent,
-          });
-        } catch (cacheError) {
-          if (import.meta.env.DEV) {
-            console.warn("[cache:publish]", cacheError);
-          }
-        }
-      }
+      await persistAcceptedEventToCache(relayEvent, publishResult, "publish");
 
       setDraftContent("");
       setReplyTargetDraftItem(null);
@@ -254,13 +250,16 @@ export function usePublish(args: UsePublishArgs) {
     setPendingReactionEventIds((current) =>
       current.includes(item.id) ? current : [...current, item.id],
     );
+    setPendingReactionIntentsByEventId((current) => (
+      current[item.id] ? current : { ...current, [item.id]: reactionIntent }
+    ));
     setIsPublishing(true);
     setPublishError(null);
     setPublishMessage("リアクション署名を要求しています");
 
     try {
       const pubkey = await resolveSigningPubkey(args);
-      const reactionRelayHint = args.selectReactionRelayHint();
+      const reactionRelayHint = args.selectReferenceRelayHint();
       const reactionContent = buildReactionContent(reactionIntent);
       const customEmojiTags = buildReactionCustomEmojiTags(reactionIntent);
 
@@ -330,20 +329,9 @@ export function usePublish(args: UsePublishArgs) {
         args.scheduleRefreshRef.current();
       }
 
-      for (const relayUrl of publishResult.acceptedRelayUrls) {
-        try {
-          await persistAcceptedEvent({
-            relayUrl,
-            event: relayEvent,
-          });
-        } catch (cacheError) {
-          if (import.meta.env.DEV) {
-            console.warn("[cache:reaction]", cacheError);
-          }
-        }
-      }
+      await persistAcceptedEventToCache(relayEvent, publishResult, "reaction");
 
-      args.rememberLocalReactionTarget(item);
+      args.rememberLocalReactionTarget(item, reactionIntent);
       setPublishMessage(formatReactionSuccessMessage(publishResult));
       setPublishError(null);
     } catch (error) {
@@ -366,6 +354,144 @@ export function usePublish(args: UsePublishArgs) {
       setPendingReactionEventIds((current) =>
         current.filter((eventId) => eventId !== item.id),
       );
+      setPendingReactionIntentsByEventId((current) => {
+        if (!current[item.id]) {
+          return current;
+        }
+
+        const next = { ...current };
+        delete next[item.id];
+        return next;
+      });
+      setIsPublishing(false);
+    }
+  }
+
+  async function handleRepost(item: TimelineItem) {
+    if (item.kind !== 1 || isPublishing) {
+      return;
+    }
+
+    const relayCoordinator = args.relayCoordinatorRef.current;
+
+    if (args.writeRelayUrls.length === 0) {
+      setPublishError("write relay が設定されていません");
+      setPublishMessage(null);
+      return;
+    }
+
+    const readyWriteRelayCount = args.countReadyWriteRelays();
+
+    if (!relayCoordinator || readyWriteRelayCount === 0) {
+      setPublishError("write relay 接続がまだ準備できていません");
+      setPublishMessage(null);
+      return;
+    }
+
+    const signer = args.createActiveSigner();
+
+    if (!signer) {
+      setPublishError("リポスト送信には署名可能なログインが必要です");
+      setPublishMessage(null);
+      return;
+    }
+
+    setIsPublishing(true);
+    setPublishError(null);
+    setPublishMessage("リポスト署名を要求しています");
+
+    try {
+      const pubkey = await resolveSigningPubkey(args);
+      const repostRelayHint = args.selectReferenceRelayHint();
+
+      if (!repostRelayHint) {
+        throw new Error("リポスト先を示す relay URL を選べませんでした");
+      }
+
+      const unsigned = await buildUnsignedEvent({
+        pubkey,
+        content: "",
+        kind: 6,
+        tags: [
+          ["e", item.id, repostRelayHint],
+          ["p", item.pubkey],
+        ],
+      });
+      const signerEvent = toSignerEvent(unsigned);
+      const signed = await signer.signEvent(signerEvent);
+      assertSignedEventMatchesUnsigned(signerEvent, signed);
+      if (!args.signerPubkey) {
+        await args.adoptNip07SignerPubkey(signed.pubkey);
+      }
+
+      const verified = await verifySignedEvent({
+        id: signed.id,
+        pubkey: signed.pubkey,
+        createdAt: signed.created_at,
+        kind: signed.kind,
+        tags: signed.tags,
+        content: signed.content,
+        sig: signed.sig,
+      });
+
+      if (!verified) {
+        throw new Error("署名済み repost event の検証に失敗しました");
+      }
+
+      const relayEvent = toRelayEvent(signed);
+
+      setPublishMessage("リポストを relay へ送信しています");
+      const publishResult = await relayCoordinator.publishEvent(relayEvent);
+      args.applyRelayPublishDiagnostics(publishResult);
+
+      const inserted = await verifyAndInsert({
+        id: signed.id,
+        pubkey: signed.pubkey,
+        createdAt: signed.created_at,
+        kind: signed.kind,
+        tags: signed.tags,
+        content: signed.content,
+        sig: signed.sig,
+      });
+
+      if (!inserted && import.meta.env.DEV) {
+        console.info(
+          "[publish:local_insert]",
+          "リポストイベントは既に取り込み済みのため重複挿入をスキップしました",
+          { eventId: signed.id },
+        );
+      }
+
+      args.rememberLocalPublishedEvent(relayEvent);
+
+      if (inserted) {
+        await args.refreshSnapshotRef.current();
+      } else {
+        args.scheduleRefreshRef.current();
+      }
+
+      await persistAcceptedEventToCache(relayEvent, publishResult, "repost");
+
+      setPublishMessage(formatRepostSuccessMessage(publishResult));
+      setPublishError(null);
+      args.queueProfileLookupRef.current(relayEvent.pubkey);
+    } catch (error) {
+      if (error instanceof UnsupportedSignerError) {
+        args.markSignerUnavailable();
+      }
+
+      if (error instanceof RelayPublishError) {
+        args.applyRelayPublishDiagnostics({
+          acceptedRelayUrls: [],
+          rejectedRelayUrls: error.rejectedRelayUrls,
+          errors: error.errors,
+        });
+      }
+
+      const message = error instanceof Error ? error.message : String(error);
+      setPublishError(message);
+      setPublishMessage(null);
+    } finally {
       setIsPublishing(false);
     }
   }
@@ -406,8 +532,10 @@ export function usePublish(args: UsePublishArgs) {
     handleDraftKeyDown,
     handlePublish,
     handleReaction,
+    handleRepost,
     isPublishing,
     pendingReactionEventIds,
+    pendingReactionIntentsByEventId,
     publishError,
     publishMessage,
     replyTargetItem,
@@ -455,4 +583,23 @@ function toRelayEvent(event: SignedNostrEvent): NostrEvent {
     content: event.content,
     sig: event.sig,
   };
+}
+
+async function persistAcceptedEventToCache(
+  relayEvent: NostrEvent,
+  publishResult: RelayPublishResult,
+  scope: "publish" | "reaction" | "repost",
+) {
+  for (const relayUrl of publishResult.acceptedRelayUrls) {
+    try {
+      await persistAcceptedEvent({
+        relayUrl,
+        event: relayEvent,
+      });
+    } catch (cacheError) {
+      if (import.meta.env.DEV) {
+        console.warn(`[cache:${scope}]`, cacheError);
+      }
+    }
+  }
 }

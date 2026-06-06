@@ -6,6 +6,7 @@ import init, {
   list_timeline,
   logout_local_signer,
   reset_timeline,
+  presign_unsigned_event,
   sign_unsigned_event_with_local_signer,
   since_hint,
   verify_event,
@@ -26,6 +27,10 @@ export type SignedEvent = UnsignedEvent & {
   sig: string;
 };
 
+export type PresignedEvent = UnsignedEvent & {
+  id: string;
+};
+
 export type TimelineItem = {
   id: string;
   pubkey: string;
@@ -38,6 +43,10 @@ export type TimelineItem = {
   replyTargetRelayHints?: string[];
   replyTargetProfile: TimelineProfile | null;
   replyContextPubkeys: string[];
+  repostTargetEventId?: string | null;
+  repostTargetPubkey?: string | null;
+  repostTargetRelayHints?: string[];
+  repostTargetProfile?: TimelineProfile | null;
   likeCount: number;
   kusaCount?: number;
   moreReactionCount?: number;
@@ -98,6 +107,21 @@ export async function buildUnsignedEvent(args: {
   );
 
   return parseUnsignedEvent(json);
+}
+
+export async function presignUnsignedEvent(args: UnsignedEvent): Promise<PresignedEvent> {
+  await initializeWasm();
+  const json = presign_unsigned_event(
+    JSON.stringify({
+      pubkey: args.pubkey,
+      created_at: args.createdAt,
+      kind: args.kind,
+      tags: args.tags,
+      content: args.content,
+    }),
+  );
+
+  return parsePresignedEvent(json);
 }
 
 export async function loginWithNsec(nsec: string) {
@@ -231,6 +255,14 @@ export async function listTimeline(limit: number, until: number | null) {
       picture: string | null;
     } | null;
     reply_context_pubkeys?: string[];
+    repost_target_event_id?: string | null;
+    repost_target_pubkey?: string | null;
+    repost_target_relay_hints?: string[];
+    repost_target_profile?: {
+      name: string | null;
+      display_name: string | null;
+      picture: string | null;
+    } | null;
     like_count?: number;
     kusa_count?: number;
     more_reaction_count?: number;
@@ -263,6 +295,16 @@ export async function listTimeline(limit: number, until: number | null) {
         }
       : null,
     replyContextPubkeys: item.reply_context_pubkeys ?? [],
+    repostTargetEventId: item.repost_target_event_id ?? null,
+    repostTargetPubkey: item.repost_target_pubkey ?? null,
+    repostTargetRelayHints: item.repost_target_relay_hints ?? [],
+    repostTargetProfile: item.repost_target_profile
+      ? {
+          name: item.repost_target_profile.name,
+          displayName: item.repost_target_profile.display_name,
+          picture: item.repost_target_profile.picture,
+        }
+      : null,
     likeCount: item.like_count ?? 0,
     kusaCount: item.kusa_count ?? 0,
     moreReactionCount: item.more_reaction_count ?? 0,
@@ -305,6 +347,26 @@ function parseUnsignedEvent(json: string): UnsignedEvent {
   };
 
   return {
+    pubkey: parsed.pubkey,
+    createdAt: parsed.created_at,
+    kind: parsed.kind,
+    tags: parsed.tags,
+    content: parsed.content,
+  };
+}
+
+function parsePresignedEvent(json: string): PresignedEvent {
+  const parsed = JSON.parse(json) as {
+    id: string;
+    pubkey: string;
+    created_at: number;
+    kind: number;
+    tags: string[][];
+    content: string;
+  };
+
+  return {
+    id: parsed.id,
     pubkey: parsed.pubkey,
     createdAt: parsed.created_at,
     kind: parsed.kind,

@@ -12,18 +12,23 @@ import {
 import type { TimelineView } from "../app/types";
 import { buildFocusedEventHref } from "../lib/nostr/eventRoute";
 import { encodeNevent } from "../lib/nostr/nip19";
+import { buildEmbeddedRepostTargetTimelineItem } from "../lib/nostr/timelineItem";
 import {
   formatAuthorLabel,
   formatAuthorNameLabel,
   formatAuthorSubLabel,
   formatAvatarLabel,
   formatPubkey,
+  formatRepostContextLabel,
+  formatRepostTargetLabel,
   formatReplyContextLabel,
   formatReplyTargetLabel,
 } from "../lib/nostr/profilePresentation";
 import { sanitizeProfilePictureUrl } from "../lib/nostr/profile";
 import {
+  formatCollapsedReactionSummary,
   formatReactionContentLabel,
+  type ViewerReactionState,
   type ReactionIntent,
 } from "../lib/nostr/reaction";
 import { parseContentSegments } from "../lib/ui/contentSegments";
@@ -49,17 +54,20 @@ type TimelineCardProps = {
   onCopyEventId: (eventId: string) => void | Promise<void>;
   onPauseTimelineDisplay: () => void;
   onPointerDown?: PointerEventHandler<HTMLLIElement>;
+  onRepost: (item: TimelineItem) => void | Promise<void>;
   onReply: (item: TimelineItem) => void | Promise<void>;
   onReact: (item: TimelineItem, reactionIntent: ReactionIntent) => void | Promise<void>;
   onResumeTimelineDisplay: () => void;
   onViewEventJson: (item: TimelineItem) => void | Promise<void>;
   pendingReactionEventIds: readonly string[];
+  pendingReactionIntentsByEventId: Readonly<Record<string, ReactionIntent>>;
   physicsMode?: boolean;
   readyWriteRelayCount: number;
   referenceItemsById: ReadonlyMap<string, TimelineItem>;
   replyPreviewStatuses: Readonly<Record<string, "hit" | "pending" | "missing">>;
   style?: CSSProperties;
   timelineView: TimelineView;
+  viewerReactionStateByTargetId: Readonly<Record<string, ViewerReactionState>>;
 };
 
 type TimelineCardRenderContext = {
@@ -72,16 +80,19 @@ type TimelineCardRenderContext = {
   isPublishing: boolean;
   onCopyEventId: (eventId: string) => void | Promise<void>;
   onPauseTimelineDisplay: () => void;
+  onRepost: (item: TimelineItem) => void | Promise<void>;
   onReply: (item: TimelineItem) => void | Promise<void>;
   onReact: (item: TimelineItem, reactionIntent: ReactionIntent) => void | Promise<void>;
   onResumeTimelineDisplay: () => void;
   onViewEventJson: (item: TimelineItem) => void | Promise<void>;
   pendingReactionEventIds: readonly string[];
+  pendingReactionIntentsByEventId: Readonly<Record<string, ReactionIntent>>;
   physicsMode?: boolean;
   readyWriteRelayCount: number;
   referenceItemsById: ReadonlyMap<string, TimelineItem>;
   replyPreviewStatuses: Readonly<Record<string, "hit" | "pending" | "missing">>;
   timelineView: TimelineView;
+  viewerReactionStateByTargetId: Readonly<Record<string, ViewerReactionState>>;
 };
 
 export function TimelineCard(props: TimelineCardProps) {
@@ -94,6 +105,8 @@ export function TimelineCard(props: TimelineCardProps) {
   const authorSubLabel = formatAuthorSubLabel(props.item, displayPubkey);
   const avatarLabel = formatAvatarLabel(props.item, displayPubkey);
   const avatarStyle = buildAvatarStyle(props.item.pubkey);
+  const repostContextLabel = formatRepostContextLabel(props.item);
+  const repostTargetLabel = formatRepostTargetLabel(props.item);
   const replyContextLabel = formatReplyContextLabel(props.item);
   const replyTargetLabel = formatReplyTargetLabel(props.item);
   const replyBandStyle = buildReplyBandStyle(
@@ -133,6 +146,12 @@ export function TimelineCard(props: TimelineCardProps) {
       ? props.referenceItemsById.get(props.item.replyTargetEventId) ?? null
       : null,
   );
+  const repostTargetPreviewItem = resolveRepostTargetPreviewItem(
+    props.item,
+    props.item.repostTargetEventId
+      ? props.referenceItemsById.get(props.item.repostTargetEventId) ?? null
+      : null,
+  );
   const replyTargetPreviewContent = replyTargetPreviewItem
     ? formatReplyPreviewContent(replyTargetPreviewItem)
     : null;
@@ -145,6 +164,10 @@ export function TimelineCard(props: TimelineCardProps) {
         profile: props.item.replyTargetProfile,
       }
     : replyTargetPreviewItem;
+  const repostTargetEmbeddedItem = resolveRepostTargetEmbeddedItem(
+    props.item,
+    repostTargetPreviewItem,
+  );
   const replyTargetPreviewPubkey = replyTargetPreviewSourceItem
     ? formatPubkey(replyTargetPreviewSourceItem.pubkey)
     : null;
@@ -155,19 +178,36 @@ export function TimelineCard(props: TimelineCardProps) {
     !replyTargetPreviewAuthorLabel && replyTargetLabel
       ? `↪ ${replyTargetLabel}`
       : null;
+  const repostTargetPreviewPlaceholderLabel =
+    repostTargetLabel ?? "リポスト先";
   const replyTargetPreviewStatus = props.item.replyTargetEventId
     ? props.replyPreviewStatuses[props.item.replyTargetEventId] ?? null
+    : null;
+  const repostTargetPreviewStatus = props.item.repostTargetEventId
+    ? props.replyPreviewStatuses[props.item.repostTargetEventId] ?? null
     : null;
   const replyTargetPreviewPlaceholderText = formatReplyPreviewPlaceholderText(
     replyTargetPreviewStatus,
   );
+  const repostTargetPreviewPlaceholderText = formatRepostPreviewPlaceholderText(
+    repostTargetPreviewStatus,
+  );
   const isReactionPending = props.pendingReactionEventIds.includes(props.item.id);
   const showReplyButton = !props.physicsMode && props.item.kind === 1 && props.canReply;
+  const showRepostButton = !props.physicsMode && props.item.kind === 1;
   const showReactionButton = !props.physicsMode && props.item.kind === 1;
   const likeCount = props.item.likeCount;
   const kusaCount = props.item.kusaCount ?? 0;
+  const showLikeCount = likeCount > 0;
+  const showKusaCount = kusaCount > 0;
   const moreReactionCount = props.item.moreReactionCount ?? 0;
   const otherReactionSummaries = props.item.otherReactionSummaries ?? [];
+  const viewerReactionState = props.viewerReactionStateByTargetId[props.item.id];
+  const pendingReactionIntent = props.pendingReactionIntentsByEventId[props.item.id];
+  const isLikeReactionActive =
+    viewerReactionState?.like === true || pendingReactionIntent === "like";
+  const isKusaReactionActive =
+    viewerReactionState?.kusa === true || pendingReactionIntent === "kusa";
   const [isMoreReactionsOpen, setIsMoreReactionsOpen] = useState(false);
   const [isDebugMenuOpen, setIsDebugMenuOpen] = useState(false);
   const moreReactionPopoverRef = useRef<HTMLDivElement | null>(null);
@@ -177,6 +217,10 @@ export function TimelineCard(props: TimelineCardProps) {
     || isReactionPending
     || !props.canSendReaction
     || props.readyWriteRelayCount === 0;
+  const repostButtonDisabled =
+    props.isPublishing
+    || !props.canSendReaction
+    || props.readyWriteRelayCount === 0;
   const reactionButtonTitle = !props.canSendReaction
     ? "リアクション送信には署名可能なログインが必要です"
     : props.readyWriteRelayCount === 0
@@ -184,9 +228,61 @@ export function TimelineCard(props: TimelineCardProps) {
       : isReactionPending
         ? "リアクション送信中です"
         : null;
+  const repostButtonTitle = !props.canSendReaction
+    ? "リポスト送信には署名可能なログインが必要です"
+    : props.readyWriteRelayCount === 0
+      ? "write relay 接続がまだ準備できていません"
+      : props.isPublishing
+        ? "リポスト送信中です"
+        : "リポスト";
   const moreReactionSummaryTitle = otherReactionSummaries
     .map((summary) => formatExpandedReactionSummary(summary.content, summary.count))
     .join(" ");
+  const collapsedReactionSummary = formatCollapsedReactionSummary(
+    otherReactionSummaries,
+    moreReactionCount,
+  );
+  const developerMenu = props.developerModeEnabled && !props.physicsMode ? (
+    <div ref={debugMenuRef} className="timeline-debug-menu-wrap">
+      <button
+        type="button"
+        className="timeline-debug-menu-button"
+        aria-expanded={isDebugMenuOpen}
+        aria-label="開発者メニュー"
+        onClick={() => {
+          setIsDebugMenuOpen((current) => !current);
+        }}
+      >
+        ...
+      </button>
+      {isDebugMenuOpen ? (
+        <div className="timeline-debug-menu-popover" role="menu">
+          <button
+            type="button"
+            className="timeline-debug-menu-item"
+            role="menuitem"
+            onClick={() => {
+              setIsDebugMenuOpen(false);
+              void props.onCopyEventId(props.item.id);
+            }}
+          >
+            ID をコピー
+          </button>
+          <button
+            type="button"
+            className="timeline-debug-menu-item"
+            role="menuitem"
+            onClick={() => {
+              setIsDebugMenuOpen(false);
+              void props.onViewEventJson(props.item);
+            }}
+          >
+            JSON を確認
+          </button>
+        </div>
+      ) : null}
+    </div>
+  ) : null;
   const renderContext: TimelineCardRenderContext = {
     canReply: props.canReply,
     canSendReaction: props.canSendReaction,
@@ -197,26 +293,31 @@ export function TimelineCard(props: TimelineCardProps) {
     isPublishing: props.isPublishing,
     onCopyEventId: props.onCopyEventId,
     onPauseTimelineDisplay: props.onPauseTimelineDisplay,
+    onRepost: props.onRepost,
     onReply: props.onReply,
     onReact: props.onReact,
     onResumeTimelineDisplay: props.onResumeTimelineDisplay,
     onViewEventJson: props.onViewEventJson,
     pendingReactionEventIds: props.pendingReactionEventIds,
+    pendingReactionIntentsByEventId: props.pendingReactionIntentsByEventId,
     physicsMode: props.physicsMode,
     readyWriteRelayCount: props.readyWriteRelayCount,
     referenceItemsById: props.referenceItemsById,
     replyPreviewStatuses: props.replyPreviewStatuses,
     timelineView: props.timelineView,
+    viewerReactionStateByTargetId: props.viewerReactionStateByTargetId,
   };
   const displayContentText = formatTimelineItemContent(
     props.timelineView,
     props.item,
   );
+  const hasDisplayContent = displayContentText.length > 0;
   const displayContent = renderTimelineItemContent({
     content: displayContentText,
     item: props.item,
     renderContext,
   });
+  const isRepostShell = props.item.kind === 6;
   const cardStyle =
     replyBandStyle
       ? {
@@ -224,7 +325,7 @@ export function TimelineCard(props: TimelineCardProps) {
           ...props.style,
         }
       : props.style;
-  const cardClassName = `timeline-card${replyBandStyle ? " timeline-card-reply" : ""}${props.physicsMode ? " timeline-card-physics" : ""}${isEmbedded ? " timeline-card-embedded" : ""}${props.className ? ` ${props.className}` : ""}`;
+  const cardClassName = `timeline-card${replyBandStyle ? " timeline-card-reply" : ""}${props.physicsMode ? " timeline-card-physics" : ""}${isEmbedded ? " timeline-card-embedded" : ""}${isRepostShell ? " timeline-card-repost-shell" : ""}${props.className ? ` ${props.className}` : ""}`;
 
   useEffect(() => {
     setIsMoreReactionsOpen(false);
@@ -292,7 +393,39 @@ export function TimelineCard(props: TimelineCardProps) {
     setIsMoreReactionsOpen((current) => !current);
   }
 
-  const cardBody = (
+  const cardBody = isRepostShell ? (
+    <>
+      {props.physicsMode ? (
+        <div className="timeline-physics-debug-collider" aria-hidden="true" />
+      ) : null}
+      {repostContextLabel ? (
+        <div className="muted timeline-reply-context">
+          {repostContextLabel}
+        </div>
+      ) : null}
+      {repostTargetEmbeddedItem ? (
+        renderEmbeddedTimelineCard({
+          item: repostTargetEmbeddedItem,
+          renderContext,
+          key: `repost-embed-${repostTargetEmbeddedItem.id}`,
+        })
+      ) : repostTargetPreviewPlaceholderText ? (
+        <div className="timeline-reply-preview timeline-reply-preview-placeholder">
+          <div className="muted timeline-reply-preview-label">
+            {repostTargetPreviewPlaceholderLabel}
+          </div>
+          <p className="timeline-reply-preview-text">
+            {repostTargetPreviewPlaceholderText}
+          </p>
+        </div>
+      ) : null}
+      {developerMenu ? (
+        <div className="timeline-actions">
+          {developerMenu}
+        </div>
+      ) : null}
+    </>
+  ) : (
     <>
       {props.physicsMode ? (
         <div className="timeline-physics-debug-collider" aria-hidden="true" />
@@ -389,29 +522,45 @@ export function TimelineCard(props: TimelineCardProps) {
           ) : null}
         </div>
       </div>
-      <div className="timeline-text">{displayContent}</div>
+      {hasDisplayContent ? (
+        <div className="timeline-text">{displayContent}</div>
+      ) : null}
       <div className="timeline-actions">
         {showReplyButton ? (
           <button
             type="button"
             className="timeline-reaction-button timeline-reply-button"
             aria-label="返信"
+            title="リプライ"
             onClick={() => {
               void props.onReply(props.item);
             }}
           >
             <span aria-hidden="true">↩</span>
-            <span>返信</span>
+          </button>
+        ) : null}
+        {showRepostButton ? (
+          <button
+            type="button"
+            className="timeline-reaction-button timeline-repost-button"
+            disabled={repostButtonDisabled}
+            title={repostButtonTitle}
+            aria-label="リポスト"
+            onClick={() => {
+              void props.onRepost(props.item);
+            }}
+          >
+            <span aria-hidden="true">🔁</span>
           </button>
         ) : null}
         {showReactionButton ? (
           <>
             <button
               type="button"
-              className="timeline-reaction-button"
+              className={`timeline-reaction-button${isLikeReactionActive ? " timeline-reaction-button-active-like" : ""}`}
               disabled={reactionButtonDisabled}
               title={reactionButtonTitle ?? "ふぁぼ"}
-              aria-label={`★ ${likeCount}`}
+              aria-label={showLikeCount ? `★ ${likeCount}` : "★"}
               onMouseEnter={props.onPauseTimelineDisplay}
               onMouseLeave={props.onResumeTimelineDisplay}
               onClick={() => {
@@ -419,13 +568,13 @@ export function TimelineCard(props: TimelineCardProps) {
               }}
             >
               <span aria-hidden="true">★</span>
-              <span>{likeCount}</span>
+              {showLikeCount ? <span>{likeCount}</span> : null}
             </button>
             <button
               type="button"
-              className="timeline-reaction-button"
+              className={`timeline-reaction-button${isKusaReactionActive ? " timeline-reaction-button-active-kusa" : ""}`}
               disabled={reactionButtonDisabled}
-              aria-label={`草 ${kusaCount}`}
+              aria-label={showKusaCount ? `草 ${kusaCount}` : "草"}
               onMouseEnter={props.onPauseTimelineDisplay}
               onMouseLeave={props.onResumeTimelineDisplay}
               onClick={() => {
@@ -433,7 +582,7 @@ export function TimelineCard(props: TimelineCardProps) {
               }}
             >
               <span aria-hidden="true">草</span>
-              <span>{kusaCount}</span>
+              {showKusaCount ? <span>{kusaCount}</span> : null}
             </button>
             {moreReactionCount > 0 ? (
               <div
@@ -449,7 +598,7 @@ export function TimelineCard(props: TimelineCardProps) {
                   aria-expanded={isMoreReactionsOpen}
                   onClick={handleMoreReactionsClick}
                 >
-                  {`more ${moreReactionCount}`}
+                  {collapsedReactionSummary}
                 </button>
                 {isMoreReactionsOpen && otherReactionSummaries.length > 0 ? (
                   <div className="timeline-reaction-popover" role="list">
@@ -477,47 +626,7 @@ export function TimelineCard(props: TimelineCardProps) {
           <span className="timeline-meta-separator" aria-hidden="true"> </span>
           <span className="timeline-meta-time">{createdAtParts.time}</span>
         </time>
-        {props.developerModeEnabled && !props.physicsMode ? (
-          <div ref={debugMenuRef} className="timeline-debug-menu-wrap">
-            <button
-              type="button"
-              className="timeline-debug-menu-button"
-              aria-expanded={isDebugMenuOpen}
-              aria-label="開発者メニュー"
-              onClick={() => {
-                setIsDebugMenuOpen((current) => !current);
-              }}
-            >
-              ...
-            </button>
-            {isDebugMenuOpen ? (
-              <div className="timeline-debug-menu-popover" role="menu">
-                <button
-                  type="button"
-                  className="timeline-debug-menu-item"
-                  role="menuitem"
-                  onClick={() => {
-                    setIsDebugMenuOpen(false);
-                    void props.onCopyEventId(props.item.id);
-                  }}
-                >
-                  ID をコピー
-                </button>
-                <button
-                  type="button"
-                  className="timeline-debug-menu-item"
-                  role="menuitem"
-                  onClick={() => {
-                    setIsDebugMenuOpen(false);
-                    void props.onViewEventJson(props.item);
-                  }}
-                >
-                  JSON を確認
-                </button>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
+        {developerMenu}
       </div>
     </>
   );
@@ -590,6 +699,10 @@ function formatTimelineItemContent(
     return formatReactionContentLabel(item.content);
   }
 
+  if (item.kind === 6) {
+    return "";
+  }
+
   return item.content;
 }
 
@@ -632,31 +745,11 @@ function renderTimelineItemContent(args: {
       );
 
       if (embeddedPreviewItem) {
-        return (
-          <TimelineCard
-            key={`event-embed-${segment.eventId}-${index}`}
-            canReply={args.renderContext.canReply}
-            canSendReaction={args.renderContext.canSendReaction}
-            developerModeEnabled={args.renderContext.developerModeEnabled}
-            embeddedDepth={args.renderContext.embeddedDepth + 1}
-            embeddedEventIds={[...args.renderContext.embeddedEventIds, embeddedPreviewItem.id]}
-            isProfileImageEnabled={args.renderContext.isProfileImageEnabled}
-            isPublishing={args.renderContext.isPublishing}
-            item={embeddedPreviewItem}
-            onCopyEventId={args.renderContext.onCopyEventId}
-            onPauseTimelineDisplay={args.renderContext.onPauseTimelineDisplay}
-            onReply={args.renderContext.onReply}
-            onReact={args.renderContext.onReact}
-            onResumeTimelineDisplay={args.renderContext.onResumeTimelineDisplay}
-            onViewEventJson={args.renderContext.onViewEventJson}
-            pendingReactionEventIds={args.renderContext.pendingReactionEventIds}
-            physicsMode={args.renderContext.physicsMode}
-            readyWriteRelayCount={args.renderContext.readyWriteRelayCount}
-            referenceItemsById={args.renderContext.referenceItemsById}
-            replyPreviewStatuses={args.renderContext.replyPreviewStatuses}
-            timelineView={args.renderContext.timelineView}
-          />
-        );
+        return renderEmbeddedTimelineCard({
+          item: embeddedPreviewItem,
+          key: `event-embed-${segment.eventId}-${index}`,
+          renderContext: args.renderContext,
+        });
       }
 
       const focusedEventIdentifier =
@@ -711,6 +804,41 @@ function renderTimelineItemContent(args: {
       </a>
     );
   });
+}
+
+function renderEmbeddedTimelineCard(args: {
+  item: TimelineItem;
+  key: string;
+  renderContext: TimelineCardRenderContext;
+}) {
+  return (
+    <TimelineCard
+      key={args.key}
+      canReply={args.renderContext.canReply}
+      canSendReaction={args.renderContext.canSendReaction}
+      developerModeEnabled={args.renderContext.developerModeEnabled}
+      embeddedDepth={args.renderContext.embeddedDepth + 1}
+      embeddedEventIds={[...args.renderContext.embeddedEventIds, args.item.id]}
+      isProfileImageEnabled={args.renderContext.isProfileImageEnabled}
+      isPublishing={args.renderContext.isPublishing}
+      item={args.item}
+      onCopyEventId={args.renderContext.onCopyEventId}
+      onPauseTimelineDisplay={args.renderContext.onPauseTimelineDisplay}
+      onRepost={args.renderContext.onRepost}
+      onReply={args.renderContext.onReply}
+      onReact={args.renderContext.onReact}
+      onResumeTimelineDisplay={args.renderContext.onResumeTimelineDisplay}
+      onViewEventJson={args.renderContext.onViewEventJson}
+      pendingReactionEventIds={args.renderContext.pendingReactionEventIds}
+      pendingReactionIntentsByEventId={args.renderContext.pendingReactionIntentsByEventId}
+      physicsMode={args.renderContext.physicsMode}
+      readyWriteRelayCount={args.renderContext.readyWriteRelayCount}
+      referenceItemsById={args.renderContext.referenceItemsById}
+      replyPreviewStatuses={args.renderContext.replyPreviewStatuses}
+      timelineView={args.renderContext.timelineView}
+      viewerReactionStateByTargetId={args.renderContext.viewerReactionStateByTargetId}
+    />
+  );
 }
 
 function handleFocusedEventLinkClick(
@@ -788,6 +916,45 @@ function resolveReplyTargetPreviewItem(
   return replyTargetPreviewItem;
 }
 
+function resolveRepostTargetPreviewItem(
+  item: TimelineItem,
+  repostTargetPreviewItem: TimelineItem | null,
+) {
+  if (
+    item.repostTargetEventId
+    && repostTargetPreviewItem
+    && repostTargetPreviewItem.id === item.repostTargetEventId
+    && repostTargetPreviewItem.id !== item.id
+  ) {
+    return repostTargetPreviewItem;
+  }
+
+  return buildEmbeddedRepostTargetTimelineItem(item);
+}
+
+function resolveRepostTargetEmbeddedItem(
+  item: TimelineItem,
+  repostTargetPreviewItem: TimelineItem | null,
+) {
+  const previewItem = resolveRepostTargetPreviewItem(item, repostTargetPreviewItem);
+
+  if (!previewItem) {
+    return null;
+  }
+
+  if (
+    previewItem.pubkey === item.repostTargetPubkey
+    && item.repostTargetProfile
+  ) {
+    return {
+      ...previewItem,
+      profile: item.repostTargetProfile,
+    };
+  }
+
+  return previewItem;
+}
+
 function resolveContentEventPreviewItem(
   item: TimelineItem,
   eventId: string,
@@ -813,6 +980,21 @@ function formatReplyPreviewPlaceholderText(
   switch (status) {
     case "missing":
       return "返信先ポストはまだ取得できていません";
+
+    default:
+      return null;
+  }
+}
+
+function formatRepostPreviewPlaceholderText(
+  status: "hit" | "pending" | "missing" | null,
+) {
+  switch (status) {
+    case "pending":
+      return "リポスト先ポストを取得中...";
+
+    case "missing":
+      return "リポスト先ポストはまだ取得できていません";
 
     default:
       return null;

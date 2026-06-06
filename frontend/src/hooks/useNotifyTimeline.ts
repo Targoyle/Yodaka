@@ -48,10 +48,17 @@ type UseNotifyTimelineArgs = {
   viewerPubkey: string | null;
 };
 
+type LiveReactionNotice = {
+  eventId: string;
+  content: string;
+  at: number;
+};
+
 export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
   const [notifyLoadState, setNotifyLoadState] = useState<AuxiliaryLoadState>("idle");
   const [notifyError, setNotifyError] = useState<string | null>(null);
   const [notifyTimeline, setNotifyTimeline] = useState<TimelineItem[]>([]);
+  const [liveReactionNotice, setLiveReactionNotice] = useState<LiveReactionNotice | null>(null);
   const [notifyEventIds, setNotifyEventIds] = useState<string[]>([]);
   const [refreshRevision, setRefreshRevision] = useState(0);
   const [notifyFetchMeta, setNotifyFetchMeta] = useState<{
@@ -81,12 +88,18 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
     () => loadAccountRelayUrls(args.readRelayUrls),
     [args.relayConfigurationKey],
   );
+  const accountTimelineRef = useRef(args.accountTimeline);
   const ensureViewerPubkeyRef = useRef(args.ensureViewerPubkey);
   const ingestOverlayEventsRef = useRef(args.ingestOverlayEvents);
   const markSignerUnavailableRef = useRef(args.markSignerUnavailable);
   const knownNotifyTargetEventIdsRef = useRef<Set<string>>(new Set());
   const notifyTimelineRef = useRef<TimelineItem[]>([]);
   const liveNotifyEventIdsRef = useRef<string[]>([]);
+  const liveNotifyEventsRef = useRef<NostrEvent[]>([]);
+
+  useEffect(() => {
+    accountTimelineRef.current = args.accountTimeline;
+  }, [args.accountTimeline]);
 
   useEffect(() => {
     ensureViewerPubkeyRef.current = args.ensureViewerPubkey;
@@ -110,11 +123,15 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
     }
 
     liveNotifyEventIdsRef.current = [];
+    liveNotifyEventsRef.current = [];
+    setLiveReactionNotice(null);
   }, [args.viewerPubkey]);
 
   useEffect(() => {
     if (!args.notifyTabEnabled) {
       liveNotifyEventIdsRef.current = [];
+      liveNotifyEventsRef.current = [];
+      setLiveReactionNotice(null);
     }
   }, [args.notifyTabEnabled]);
 
@@ -155,8 +172,59 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
         return;
       }
 
+      liveNotifyEventsRef.current = mergeNotifyEvents(
+        [context.event],
+        liveNotifyEventsRef.current,
+        Math.max(args.timelineLimit, 256),
+      );
+
+      if (context.event.kind === 7) {
+        setLiveReactionNotice({
+          eventId: context.event.id,
+          content: context.event.content,
+          at: Date.now(),
+        });
+      }
+
+      setNotifyEventIds((currentIds) => {
+        const nextEventIds = mergeNotifyEventIds(
+          [context.event.id],
+          currentIds,
+          args.timelineLimit,
+        );
+
+        setNotifyTimeline((currentTimeline) => {
+          const referenceItems = [
+            ...currentTimeline,
+            ...accountTimelineRef.current,
+            ...args.timelineRef.current,
+          ];
+          const nextTimeline = buildImmediateNotifyTimelineState({
+            currentItems: currentTimeline,
+            event: context.event,
+            notifyEventIds: nextEventIds,
+            profileSummaries: args.profileSummariesRef.current,
+            referenceItems,
+            timelineLimit: args.timelineLimit,
+          });
+
+          return timelineItemsEqual(currentTimeline, nextTimeline)
+            ? currentTimeline
+            : nextTimeline;
+        });
+
+        return currentIds.length === nextEventIds.length
+          && currentIds.every((eventId, index) => eventId === nextEventIds[index])
+          ? currentIds
+          : nextEventIds;
+      });
+      setNotifyLoadState((current) => (
+        current === "idle" || current === "error" ? "ready" : current
+      ));
+      setNotifyError(null);
       setNotifyFetchMeta((current) => ({
         ...current,
+        notificationCount: Math.min(current.notificationCount + 1, args.timelineLimit),
         lastEventAt: Date.now(),
         liveEventCount: current.liveEventCount + 1,
       }));
@@ -278,6 +346,11 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
           return;
         }
 
+        const mergedNotificationEvents = mergeNotifyEvents(
+          liveNotifyEventsRef.current,
+          notificationEvents,
+          args.timelineLimit,
+        );
         const reactionTargetEvents = [
           ...new Map(
             [...reactionTargetEventsByReactionId.values()].map((event) => [event.id, event]),
@@ -298,7 +371,7 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
         }
 
         const nextItems = buildNotifyTimelineItems({
-          notificationEvents,
+          notificationEvents: mergedNotificationEvents,
           previousItems: notifyTimelineRef.current,
           profileSummaries: args.profileSummariesRef.current,
           reactionTargetEventsByReactionId,
@@ -310,10 +383,10 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
           knownNotifyTargetEventIdsRef.current,
         );
 
-        setNotifyEventIds(notificationEvents.map((event) => event.id));
+        setNotifyEventIds(mergedNotificationEvents.map((event) => event.id));
         setNotifyTimeline(nextItems);
         setNotifyFetchMeta((current) => ({
-          notificationCount: notificationEvents.length,
+          notificationCount: mergedNotificationEvents.length,
           resolvedTargetCount: reactionTargetEventsByReactionId.size,
           lastFetchedAt: Date.now(),
           lastEventAt: current.lastEventAt,
@@ -404,6 +477,7 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
     setNotifyLoadState("idle");
     setNotifyError(null);
     setNotifyTimeline([]);
+    setLiveReactionNotice(null);
     setNotifyEventIds([]);
     setRefreshRevision(0);
     setNotifyFetchMeta({
@@ -415,6 +489,8 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
     });
     knownNotifyTargetEventIdsRef.current = new Set();
     notifyTimelineRef.current = [];
+    liveNotifyEventIdsRef.current = [];
+    liveNotifyEventsRef.current = [];
   }, []);
 
   function primeNotifyLoad() {
@@ -465,6 +541,7 @@ export function useNotifyTimeline(args: UseNotifyTimelineArgs) {
 
   return {
     clearNotifyError,
+    liveReactionNotice,
     notifyDiagnostic,
     notifyError,
     notifyLoadState,
@@ -481,6 +558,64 @@ function orderNotifyTimeline(items: TimelineItem[], eventIds: string[], limit: n
     .map((eventId) => itemsById.get(eventId) ?? null)
     .filter((item): item is TimelineItem => item !== null)
     .slice(0, limit);
+}
+
+export function buildImmediateNotifyTimelineState(args: {
+  currentItems: TimelineItem[];
+  event: NostrEvent;
+  notifyEventIds: string[];
+  profileSummaries: Map<string, TimelineProfile>;
+  referenceItems: TimelineItem[];
+  timelineLimit: number;
+}) {
+  const immediateItems = buildNotifyTimelineItems({
+    notificationEvents: [args.event],
+    previousItems: args.currentItems,
+    profileSummaries: args.profileSummaries,
+    reactionTargetEventsByReactionId: new Map(),
+    referenceItems: args.referenceItems,
+    timelineLimit: 1,
+  });
+
+  return orderNotifyTimeline(
+    mergeAuxiliaryTimeline({
+      currentItems: args.currentItems,
+      includeItem: (item) => args.notifyEventIds.includes(item.id),
+      profileSummaries: args.profileSummaries,
+      referenceItems: [...immediateItems, ...args.referenceItems],
+      timelineLimit: args.timelineLimit,
+    }),
+    args.notifyEventIds,
+    args.timelineLimit,
+  );
+}
+
+export function mergeNotifyEventIds(preferredIds: string[], currentIds: string[], limit: number) {
+  return [...new Set([...preferredIds, ...currentIds])].slice(0, limit);
+}
+
+export function mergeNotifyEvents(
+  preferredEvents: NostrEvent[],
+  currentEvents: NostrEvent[],
+  limit: number,
+) {
+  const seenEventIds = new Set<string>();
+  const mergedEvents: NostrEvent[] = [];
+
+  for (const event of [...preferredEvents, ...currentEvents]) {
+    if (seenEventIds.has(event.id)) {
+      continue;
+    }
+
+    seenEventIds.add(event.id);
+    mergedEvents.push(event);
+
+    if (mergedEvents.length >= limit) {
+      break;
+    }
+  }
+
+  return mergedEvents;
 }
 
 function collectKnownNotifyTargetEventIds(

@@ -378,6 +378,26 @@ describe("fetchRecentReactionNotesByAuthors", () => {
         transport,
       ),
     ).resolves.toEqual({
+      reactionEvents: [
+        {
+          id: "reaction-1",
+          pubkey: author,
+          created_at: 1703184272,
+          kind: 7,
+          tags: [["e", targetEventId]],
+          content: "",
+          sig: "sig-1",
+        },
+        {
+          id: "reaction-2",
+          pubkey: author,
+          created_at: 1703184271,
+          kind: 7,
+          tags: [["e", ignoredTargetEventId]],
+          content: "-",
+          sig: "sig-2",
+        },
+      ],
       targetEvents: [
         {
           id: targetEventId,

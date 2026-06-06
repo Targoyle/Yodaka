@@ -15,6 +15,7 @@ type ComposerPanelProps = {
   draftContent: string;
   errorMessage: string | null;
   isPublishing: boolean;
+  noticeMessage: string | null;
   readyWriteRelayCount: number;
   replyTargetItem: TimelineItem | null;
   statusMessage: string | null;
@@ -108,6 +109,11 @@ export function ComposerPanel(props: ComposerPanelProps) {
               </p>
             ) : props.statusMessage ? (
               <p className="composer-feedback muted">{props.statusMessage}</p>
+            ) : null}
+            {props.noticeMessage ? (
+              <p className="composer-feedback composer-status-notice">
+                {props.noticeMessage}
+              </p>
             ) : null}
           </div>
           <button

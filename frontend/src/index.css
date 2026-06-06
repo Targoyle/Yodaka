@@ -28,6 +28,12 @@
   --theme-switch-border: rgba(39, 67, 110, 0.1);
   --theme-button-active-bg: rgba(39, 67, 110, 0.14);
   --theme-button-hover-bg: rgba(39, 67, 110, 0.08);
+  --reaction-like-active-bg: rgba(255, 209, 102, 0.24);
+  --reaction-like-active-border: rgba(189, 133, 15, 0.34);
+  --reaction-like-active-text: #8c5a0a;
+  --reaction-kusa-active-bg: rgba(110, 185, 120, 0.2);
+  --reaction-kusa-active-border: rgba(54, 129, 68, 0.28);
+  --reaction-kusa-active-text: #2f6d3a;
   --link-color: #2d60b2;
   --link-hover-bg: rgba(65, 109, 181, 0.12);
   --focus-ring: rgba(65, 109, 181, 0.34);
@@ -62,6 +68,12 @@
   --theme-switch-border: rgba(255, 255, 255, 0.08);
   --theme-button-active-bg: rgba(240, 207, 150, 0.2);
   --theme-button-hover-bg: rgba(240, 207, 150, 0.12);
+  --reaction-like-active-bg: rgba(240, 207, 150, 0.18);
+  --reaction-like-active-border: rgba(240, 207, 150, 0.32);
+  --reaction-like-active-text: #ffe1ac;
+  --reaction-kusa-active-bg: rgba(120, 192, 116, 0.18);
+  --reaction-kusa-active-border: rgba(120, 192, 116, 0.28);
+  --reaction-kusa-active-text: #caf4bc;
   --link-color: #f0cf96;
   --link-hover-bg: rgba(240, 207, 150, 0.18);
   --focus-ring: rgba(240, 207, 150, 0.28);
@@ -486,6 +498,7 @@ select {
   min-width: 0;
   display: grid;
   gap: 8px;
+  padding-inline-start: 1em;
 }
 
 .composer-feedback {
@@ -496,6 +509,11 @@ select {
 
 .composer-status-error {
   color: var(--error-text);
+}
+
+.composer-status-notice {
+  color: var(--muted-text);
+  font-size: 0.92rem;
 }
 
 .signer-badge {
@@ -1388,6 +1406,11 @@ select {
   box-shadow: none;
 }
 
+.timeline-card-repost-shell > .timeline-card-embedded,
+.timeline-card-repost-shell > .timeline-reply-preview {
+  margin-bottom: 0;
+}
+
 .timeline-text > .timeline-card-embedded:first-child {
   margin-top: 0;
 }
@@ -1541,7 +1564,23 @@ select {
   cursor: pointer;
 }
 
+.timeline-reaction-button-active-like {
+  border-color: var(--reaction-like-active-border);
+  background: var(--reaction-like-active-bg);
+  color: var(--reaction-like-active-text);
+}
+
+.timeline-reaction-button-active-kusa {
+  border-color: var(--reaction-kusa-active-border);
+  background: var(--reaction-kusa-active-bg);
+  color: var(--reaction-kusa-active-text);
+}
+
 .timeline-reply-button {
+  color: var(--muted-text);
+}
+
+.timeline-repost-button {
   color: var(--muted-text);
 }
 

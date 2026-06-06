@@ -18,6 +18,11 @@ import { normalizeRelayUrls } from "../lib/nostr/contacts";
 import { encodeNevent } from "../lib/nostr/nip19";
 import { resolveFocusedEventRouteFromLocation } from "../lib/nostr/eventRoute";
 import {
+  formatReactionContentLabel,
+  type ReactionIntent,
+} from "../lib/nostr/reaction";
+import {
+  buildFocusedThreadTimeline,
   buildTimelineEmptyMessage,
   buildVisibleTimeline,
 } from "../lib/nostr/timelinePresentation";
@@ -89,6 +94,17 @@ const loadEventJsonDialog = () =>
 const LazyKeyMinerPanel = lazy(loadKeyMinerPanel);
 const LazySignerDialog = lazy(loadSignerDialog);
 const LazyEventJsonDialog = lazy(loadEventJsonDialog);
+const COMPOSER_NOTIFY_TTL_MS = 5_000;
+type PendingAuthenticatedTimelineAction =
+  | {
+      item: TimelineItem;
+      reactionIntent: ReactionIntent;
+      type: "reaction";
+    }
+  | {
+      item: TimelineItem;
+      type: "repost";
+    };
 
 export function App() {
   const [relaySettings, setRelaySettings] = useState<RelaySetting[]>(() =>
@@ -110,6 +126,11 @@ export function App() {
   const [reactionTabEnabled, setReactionTabEnabled] = useState(() =>
     loadReactionTabEnabled(),
   );
+  const [composerWelcomeDismissed, setComposerWelcomeDismissed] = useState(false);
+  const [composerNotifyQueue, setComposerNotifyQueue] = useState<Array<{
+    id: string;
+    text: string;
+  }>>([]);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const settingsMenuRef = useRef<HTMLDetailsElement | null>(null);
   const [themePreference, setThemePreference] = useState<ThemePreference>(() =>
@@ -149,6 +170,8 @@ export function App() {
   const [relaySettingsError, setRelaySettingsError] = useState<string | null>(null);
   const [signerDialogOpen, setSignerDialogOpen] = useState(false);
   const [pendingFollowAfterNsecLogin, setPendingFollowAfterNsecLogin] = useState(false);
+  const [pendingAuthenticatedTimelineAction, setPendingAuthenticatedTimelineAction] =
+    useState<PendingAuthenticatedTimelineAction | null>(null);
   const [composerWelcomeMessage, setComposerWelcomeMessage] = useState<string | null>(null);
   const [eventJsonDialogState, setEventJsonDialogState] = useState<{
     isOpen: boolean;
@@ -209,7 +232,7 @@ export function App() {
     relayDiagnostics,
     relayStatus,
     scheduleRefreshRef,
-    selectReactionRelayHint,
+    selectReferenceRelayHint,
     syncStatus,
     timeline,
     timelineRef,
@@ -228,8 +251,9 @@ export function App() {
   const canOpenPersonalTimeline = canSignEvents || Boolean(viewerPubkey);
   const hasAutoSwitchedToFollowRef = useRef(false);
   const readyReadRelayCount = relayStatus.readyRelayCount;
-  const debugRelayTransport = createTemporaryRelayTransport(
-    () => relayCoordinatorRef.current,
+  const debugRelayTransport = useMemo(
+    () => createTemporaryRelayTransport(() => relayCoordinatorRef.current),
+    [relayCoordinatorRef],
   );
   const focusRelayView = useCallback(() => {
     hasAutoSwitchedToFollowRef.current = true;
@@ -271,7 +295,7 @@ export function App() {
     accountTimeline,
     clearAccountError,
     primeAccountLoad,
-    rememberLocalPublishedTextNote,
+    rememberLocalPublishedEvent,
     resetAccountState,
   } = useAccountTimeline({
     autoSignerPromptBlocked,
@@ -296,6 +320,7 @@ export function App() {
   });
   const {
     clearNotifyError,
+    liveReactionNotice,
     notifyDiagnostic,
     notifyError,
     notifyLoadState,
@@ -333,6 +358,7 @@ export function App() {
     reactionTimeline,
     rememberLocalReactionTarget,
     resetReactionState,
+    viewerReactionStateByTargetId,
   } = useReactionTimeline({
     autoSignerPromptBlocked,
     ensureViewerPubkey,
@@ -408,13 +434,13 @@ export function App() {
   }, [setAutoSignerPromptBlocked, viewerPubkey]);
 
   useEffect(() => {
-    if (canSignEvents && signerPubkey) {
+    if (canSignEvents && signerPubkey && !composerWelcomeDismissed) {
       setComposerWelcomeMessage((current) => current ?? pickComposerWelcomeMessage());
       return;
     }
 
     setComposerWelcomeMessage(null);
-  }, [canSignEvents, signerPubkey]);
+  }, [canSignEvents, composerWelcomeDismissed, signerPubkey]);
 
   useEffect(() => {
     if (
@@ -689,6 +715,7 @@ export function App() {
   }
 
   function handleCloseSignerDialog() {
+    setPendingAuthenticatedTimelineAction(null);
     setSignerDialogOpen(false);
   }
 
@@ -729,6 +756,7 @@ export function App() {
   async function handleClearCurrentSignerFromDialog() {
     await clearActiveSigner();
     setPendingFollowAfterNsecLogin(false);
+    setPendingAuthenticatedTimelineAction(null);
 
     if (!manualPubkey && timelineView !== "relay") {
       setTimelineView("relay");
@@ -741,6 +769,7 @@ export function App() {
       setPendingFollowAfterNsecLogin(false);
     }
 
+    setPendingAuthenticatedTimelineAction(null);
     setSignerDialogOpen(false);
     openManualPubkeyDialog(viewerPubkey);
   }
@@ -828,7 +857,6 @@ export function App() {
     profileSummariesRef,
     queueProfileLookupRef,
     readRelayUrls,
-    readyReadRelayCount,
     referenceItems: baseTimelineSourceItems,
     referenceItemsById: baseTimelineSourceItemsById,
     timelineView,
@@ -837,10 +865,19 @@ export function App() {
   const previewVisibleTimeline = useMemo(
     () => (
       focusedEventRoute
-        ? (focusedEventDisplayItem ? [focusedEventDisplayItem] : [])
+        ? buildFocusedThreadTimeline({
+          focusedItem: focusedEventDisplayItem,
+          referenceItems: baseTimelineSourceItems,
+          timelineLimit: TIMELINE_LIMIT,
+        })
         : baseVisibleTimeline
     ),
-    [baseVisibleTimeline, focusedEventDisplayItem, focusedEventRoute],
+    [
+      baseTimelineSourceItems,
+      baseVisibleTimeline,
+      focusedEventDisplayItem,
+      focusedEventRoute,
+    ],
   );
   const replyPreviewReferenceItems = useMemo(
     () => (
@@ -856,7 +893,6 @@ export function App() {
   } = useReplyPreviewCache({
     profileSummariesRef,
     readRelayUrls,
-    readyReadRelayCount,
     referenceItems: replyPreviewReferenceItems,
     timelineView,
     transport: debugRelayTransport,
@@ -903,8 +939,10 @@ export function App() {
     handleDraftKeyDown,
     handlePublish,
     handleReaction,
+    handleRepost,
     isPublishing,
     pendingReactionEventIds,
+    pendingReactionIntentsByEventId,
     publishError,
     publishMessage,
     replyTargetItem,
@@ -916,14 +954,14 @@ export function App() {
     ensureSignerPubkey,
     markSignerUnavailable,
     queueProfileLookupRef,
-    rememberLocalPublishedTextNote,
+    rememberLocalPublishedEvent,
     referenceItemsById: publishReferenceItemsById,
     refreshSnapshotRef,
     relayCoordinatorRef,
     requestSignerPubkeyFromUserGesture,
     rememberLocalReactionTarget,
     scheduleRefreshRef,
-    selectReactionRelayHint,
+    selectReferenceRelayHint,
     signerPubkey,
     viewerPubkey,
     writeRelayUrls,
@@ -933,11 +971,44 @@ export function App() {
   const readyWriteRelayCount = countReadyWriteRelays();
   const canComposeNotes = canSignEvents && Boolean(signerPubkey);
   const canStartReply = canOpenPersonalTimeline;
-  const canSendReaction = canSignEvents;
+  const canSendReaction = canOpenPersonalTimeline;
+  const requiresSignerSelectionForViewerAction =
+    Boolean(viewerPubkey) && !canSignEvents;
+  const composerNotifyMessage = composerNotifyQueue[0]?.text ?? null;
+  const activeComposerNotifyId = composerNotifyQueue[0]?.id ?? null;
   const handleComposerClearFeedback = useCallback(() => {
     clearSignerRequestFeedback();
     clearPublishFeedback();
   }, [clearPublishFeedback, clearSignerRequestFeedback]);
+  useEffect(() => {
+    if (
+      !pendingAuthenticatedTimelineAction
+      || !signerPubkey
+      || signerDialogOpen
+      || isPublishing
+    ) {
+      return;
+    }
+
+    setPendingAuthenticatedTimelineAction(null);
+
+    if (pendingAuthenticatedTimelineAction.type === "reaction") {
+      void handleReaction(
+        pendingAuthenticatedTimelineAction.item,
+        pendingAuthenticatedTimelineAction.reactionIntent,
+      );
+      return;
+    }
+
+    void handleRepost(pendingAuthenticatedTimelineAction.item);
+  }, [
+    handleReaction,
+    handleRepost,
+    isPublishing,
+    pendingAuthenticatedTimelineAction,
+    signerDialogOpen,
+    signerPubkey,
+  ]);
   const runtimeComposerError = publishError ?? signerRequestError;
   const runtimeComposerMessage =
     runtimeComposerError ? null : publishMessage ?? signerRequestMessage;
@@ -988,6 +1059,44 @@ export function App() {
     });
   }, [canComposeNotes, replyTargetItem]);
 
+  useEffect(() => {
+    if (!liveReactionNotice) {
+      return;
+    }
+
+    const reactionLabel = formatReactionContentLabel(liveReactionNotice.content);
+
+    setComposerWelcomeDismissed(true);
+
+    setComposerNotifyQueue((current) => (
+      current.some((entry) => entry.id === liveReactionNotice.eventId)
+        ? current
+        : [
+          ...current,
+          {
+            id: liveReactionNotice.eventId,
+            text: reactionLabel,
+          },
+        ]
+    ));
+  }, [liveReactionNotice]);
+
+  useEffect(() => {
+    if (!activeComposerNotifyId || typeof window === "undefined") {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setComposerNotifyQueue((current) => (
+        current[0]?.id === activeComposerNotifyId ? current.slice(1) : current
+      ));
+    }, COMPOSER_NOTIFY_TTL_MS);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [activeComposerNotifyId]);
+
   function handleReply(item: TimelineItem) {
     handleComposerClearFeedback();
     beginReply(item);
@@ -995,6 +1104,40 @@ export function App() {
     if (!canComposeNotes) {
       handleOpenSignerDialog();
     }
+  }
+
+  function handleRepostWithLoginFlow(item: TimelineItem) {
+    handleComposerClearFeedback();
+
+    if (requiresSignerSelectionForViewerAction) {
+      setPendingAuthenticatedTimelineAction({
+        item,
+        type: "repost",
+      });
+      handleOpenSignerDialog();
+      return;
+    }
+
+    void handleRepost(item);
+  }
+
+  function handleReactionWithLoginFlow(
+    item: TimelineItem,
+    reactionIntent: ReactionIntent,
+  ) {
+    handleComposerClearFeedback();
+
+    if (requiresSignerSelectionForViewerAction) {
+      setPendingAuthenticatedTimelineAction({
+        item,
+        reactionIntent,
+        type: "reaction",
+      });
+      handleOpenSignerDialog();
+      return;
+    }
+
+    void handleReaction(item, reactionIntent);
   }
 
   return (
@@ -1067,6 +1210,7 @@ export function App() {
               draftContent={draftContent}
               errorMessage={composerError}
               isPublishing={isPublishing}
+              noticeMessage={composerNotifyMessage}
               readyWriteRelayCount={readyWriteRelayCount}
               replyTargetItem={replyTargetItem}
               statusMessage={composerMessage}
@@ -1092,8 +1236,10 @@ export function App() {
           notifyTabEnabled={notifyTabEnabled}
           physicsEnabled={physicsEnabled}
           onCopyEventId={handleCopyEventId}
+          onRepost={handleRepostWithLoginFlow}
           onReply={handleReply}
           pendingReactionEventIds={pendingReactionEventIds}
+          pendingReactionIntentsByEventId={pendingReactionIntentsByEventId}
           readyWriteRelayCount={readyWriteRelayCount}
           reactionTabEnabled={reactionTabEnabled}
           relayButtonTitle={relayButtonTitle}
@@ -1102,7 +1248,8 @@ export function App() {
           timelineHeadingLabel={focusedEventRoute ? "Post" : "Timeline"}
           timelineReferenceItems={timelineReferenceItems}
           timelineView={timelineView}
-          onReact={handleReaction}
+          viewerReactionStateByTargetId={viewerReactionStateByTargetId}
+          onReact={handleReactionWithLoginFlow}
           onTimelineViewChange={handleTimelineViewChange}
           onViewEventJson={handleViewEventJson}
           visibleTimeline={visibleTimeline}

@@ -12,7 +12,10 @@ import {
   resolveFocusedEventRouteFromLocation,
   stripFocusedEventFromLocation,
 } from "../lib/nostr/eventRoute";
-import { fetchLatestEventByIdViaAuthorRelays } from "../lib/nostr/eventDebug";
+import {
+  buildEventLookupRelayUrls,
+  fetchLatestEventByIdViaAuthorRelays,
+} from "../lib/nostr/eventDebug";
 import { buildStandaloneTimelineItem } from "../lib/nostr/timelineItem";
 import { buildAuxiliaryTimeline } from "../lib/nostr/timelinePresentation";
 import type { RelayOneShotTransport } from "../lib/nostr/contacts";
@@ -25,7 +28,6 @@ type UseFocusedEventRouteArgs = {
   profileSummariesRef: MutableRefObject<Map<string, TimelineProfile>>;
   queueProfileLookupRef: MutableRefObject<(pubkey: string) => void>;
   readRelayUrls: string[];
-  readyReadRelayCount: number;
   referenceItems: TimelineItem[];
   referenceItemsById: Map<string, TimelineItem>;
   timelineView: TimelineView;
@@ -40,7 +42,6 @@ export function useFocusedEventRoute(args: UseFocusedEventRouteArgs) {
     profileSummariesRef,
     queueProfileLookupRef,
     readRelayUrls,
-    readyReadRelayCount,
     referenceItems,
     referenceItemsById,
     timelineView,
@@ -137,7 +138,12 @@ export function useFocusedEventRoute(args: UseFocusedEventRouteArgs) {
       return;
     }
 
-    if (readyReadRelayCount <= 0 || readRelayUrls.length === 0) {
+    const baseRelayUrls = buildEventLookupRelayUrls(
+      readRelayUrls,
+      focusedEventRoute.relayUrls,
+    );
+
+    if (baseRelayUrls.length === 0) {
       setFocusedEventFetchState("loading");
       return;
     }
@@ -151,11 +157,12 @@ export function useFocusedEventRoute(args: UseFocusedEventRouteArgs) {
       try {
         const event = await fetchLatestEventByIdViaAuthorRelays({
           authorPubkey: focusedEventRoute.authorPubkey,
-          baseRelayUrls: normalizeRelayUrls([
-            ...readRelayUrls,
-            ...focusedEventRoute.relayUrls,
-          ]),
+          baseRelayUrls,
           eventId: focusedEventRoute.eventId,
+          relayListLookupRelayUrls:
+            readRelayUrls.length > 0
+              ? normalizeRelayUrls(readRelayUrls)
+              : baseRelayUrls,
           transport,
           options: { allowDirectFallback: true },
         });
@@ -206,7 +213,6 @@ export function useFocusedEventRoute(args: UseFocusedEventRouteArgs) {
     focusedEventRoute,
     profileSummariesRef,
     readRelayUrls,
-    readyReadRelayCount,
     referenceItems,
     referenceItemsById,
     transport,

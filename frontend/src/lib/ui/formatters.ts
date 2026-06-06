@@ -65,3 +65,14 @@ export function formatReactionSuccessMessage(result: RelayPublishResult) {
 
   return `${acceptedCount} relay へリアクション、${rejectedCount} relay は未送信です`;
 }
+
+export function formatRepostSuccessMessage(result: RelayPublishResult) {
+  const acceptedCount = result.acceptedRelayUrls.length;
+  const rejectedCount = result.rejectedRelayUrls.length;
+
+  if (rejectedCount === 0) {
+    return `${acceptedCount} relay にリポストしました`;
+  }
+
+  return `${acceptedCount} relay へリポスト、${rejectedCount} relay は未送信です`;
+}

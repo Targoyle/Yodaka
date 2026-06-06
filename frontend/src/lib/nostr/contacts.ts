@@ -99,12 +99,13 @@ export async function fetchRecentNotesForFollowTargets(
   targets: FollowTarget[],
   limit: number,
   transport?: RelayOneShotTransport | null,
+  kinds: number[] = [1],
 ) {
   const relayAuthors = buildRelayAuthorMap(baseRelayUrls, targets);
   const settled = await Promise.allSettled(
     [...relayAuthors.entries()].map(([relayUrl, authors]) =>
       requestEvents(relayUrl, {
-        kinds: [1],
+        kinds,
         authors: [...authors],
         limit,
       }, transport),
@@ -125,8 +126,9 @@ export async function fetchRecentNotesByAuthors(
   authors: string[],
   limit: number,
   transport?: RelayOneShotTransport | null,
+  kinds: number[] = [1],
 ) {
-  return fetchRecentEventsByAuthors(relayUrls, authors, [1], limit, transport);
+  return fetchRecentEventsByAuthors(relayUrls, authors, kinds, limit, transport);
 }
 
 export async function fetchRecentReactionNotesByAuthors(
@@ -146,6 +148,7 @@ export async function fetchRecentReactionNotesByAuthors(
 
   if (targetIds.length === 0) {
     return {
+      reactionEvents,
       targetEvents: [],
       targetIds: [],
     };
@@ -161,6 +164,7 @@ export async function fetchRecentReactionNotesByAuthors(
   const targetEventsById = new Map(targetEvents.map((event) => [event.id, event]));
 
   return {
+    reactionEvents,
     targetEvents: targetIds
       .map((targetId) => targetEventsById.get(targetId) ?? null)
       .filter((event): event is NostrEvent => event !== null),

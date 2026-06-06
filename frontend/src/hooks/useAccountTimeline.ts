@@ -165,6 +165,7 @@ export function useAccountTimeline(args: UseAccountTimelineArgs) {
           [pubkey],
           args.timelineLimit,
           oneShotTransport.relayTransport,
+          [1, 6],
         );
 
         if (cancelled) {
@@ -269,8 +270,8 @@ export function useAccountTimeline(args: UseAccountTimelineArgs) {
     setAccountError(null);
   }
 
-  const rememberLocalPublishedTextNote = useCallback((event: NostrEvent) => {
-    if (!args.viewerPubkey || event.kind !== 1) {
+  const rememberLocalPublishedEvent = useCallback((event: NostrEvent) => {
+    if (!args.viewerPubkey || (event.kind !== 1 && event.kind !== 6)) {
       return;
     }
 
@@ -364,7 +365,7 @@ export function useAccountTimeline(args: UseAccountTimelineArgs) {
     accountTimeline,
     clearAccountError,
     primeAccountLoad,
-    rememberLocalPublishedTextNote,
+    rememberLocalPublishedEvent,
     resetAccountState,
   };
 }

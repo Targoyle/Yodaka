@@ -13,7 +13,13 @@ import type {
 } from "../app/types";
 import {
   fetchRecentReactionNotesByAuthors,
+  findReactionTargetId,
 } from "../lib/nostr/contacts";
+import {
+  resolveReactionIntent,
+  type ReactionIntent,
+  type ViewerReactionState,
+} from "../lib/nostr/reaction";
 import type { NostrEvent } from "../lib/nostr/relay";
 import type { RelayCoordinator } from "../lib/nostr/relayCoordinator";
 import { loadAccountRelayUrls } from "../lib/nostr/relaySettings";
@@ -53,6 +59,9 @@ export function useReactionTimeline(args: UseReactionTimelineArgs) {
   const [reactionError, setReactionError] = useState<string | null>(null);
   const [reactionTimeline, setReactionTimeline] = useState<TimelineItem[]>([]);
   const [reactionTargetIds, setReactionTargetIds] = useState<string[]>([]);
+  const [viewerReactionStateByTargetId, setViewerReactionStateByTargetId] = useState<
+    Record<string, ViewerReactionState>
+  >({});
   const [refreshRevision, setRefreshRevision] = useState(0);
   const [reactionFetchMeta, setReactionFetchMeta] = useState<{
     targetCount: number;
@@ -83,6 +92,7 @@ export function useReactionTimeline(args: UseReactionTimelineArgs) {
   const ingestOverlayEventsRef = useRef(args.ingestOverlayEvents);
   const markSignerUnavailableRef = useRef(args.markSignerUnavailable);
   const localReactionTargetIdsRef = useRef<string[]>([]);
+  const localViewerReactionStateByTargetIdRef = useRef<Record<string, ViewerReactionState>>({});
   const reactionSourceKeyRef = useRef<string | null>(null);
   const liveReactionEventIdsRef = useRef<string[]>([]);
 
@@ -104,6 +114,10 @@ export function useReactionTimeline(args: UseReactionTimelineArgs) {
     }
 
     liveReactionEventIdsRef.current = [];
+    localViewerReactionStateByTargetIdRef.current = {};
+    setViewerReactionStateByTargetId((current) => (
+      Object.keys(current).length > 0 ? {} : current
+    ));
   }, [args.viewerPubkey]);
 
   useEffect(() => {
@@ -144,6 +158,20 @@ export function useReactionTimeline(args: UseReactionTimelineArgs) {
 
       if (!rememberLiveReactionEventId(liveReactionEventIdsRef.current, context.event.id)) {
         return;
+      }
+
+      const targetId = findReactionTargetId(context.event);
+      const reactionIntent = resolveReactionIntent(context.event.content);
+
+      if (targetId && reactionIntent) {
+        localViewerReactionStateByTargetIdRef.current = setViewerReactionIntent(
+          localViewerReactionStateByTargetIdRef.current,
+          targetId,
+          reactionIntent,
+        );
+        setViewerReactionStateByTargetId((current) =>
+          setViewerReactionIntent(current, targetId, reactionIntent),
+        );
       }
 
       setReactionFetchMeta((current) => ({
@@ -233,9 +261,10 @@ export function useReactionTimeline(args: UseReactionTimelineArgs) {
 
         if (sourceChanged) {
           localReactionTargetIdsRef.current = [];
+          localViewerReactionStateByTargetIdRef.current = {};
         }
 
-        const { targetEvents, targetIds } = await fetchRecentReactionNotesByAuthors(
+        const { reactionEvents, targetEvents, targetIds } = await fetchRecentReactionNotesByAuthors(
           accountRelayUrls,
           [pubkey],
           args.timelineLimit,
@@ -254,6 +283,10 @@ export function useReactionTimeline(args: UseReactionTimelineArgs) {
           targetIds,
           localReactionTargetIdsRef.current,
           args.timelineLimit,
+        );
+        const nextViewerReactionStateByTargetId = mergeViewerReactionStateByTargetId(
+          buildViewerReactionStateByTargetId(reactionEvents),
+          localViewerReactionStateByTargetIdRef.current,
         );
         const snapshotItems = await ingestOverlayEventsRef.current(targetEvents);
 
@@ -293,6 +326,11 @@ export function useReactionTimeline(args: UseReactionTimelineArgs) {
           lastEventAt: current.lastEventAt,
           liveEventCount: current.liveEventCount,
         }));
+        setViewerReactionStateByTargetId((current) => (
+          viewerReactionStateByTargetIdEqual(current, nextViewerReactionStateByTargetId)
+            ? current
+            : nextViewerReactionStateByTargetId
+        ));
         setReactionLoadState("ready");
       } catch (error) {
         if (cancelled) {
@@ -365,11 +403,13 @@ export function useReactionTimeline(args: UseReactionTimelineArgs) {
 
   const resetReactionState = useCallback(() => {
     localReactionTargetIdsRef.current = [];
+    localViewerReactionStateByTargetIdRef.current = {};
     reactionSourceKeyRef.current = null;
     setReactionLoadState("idle");
     setReactionError(null);
     setReactionTimeline([]);
     setReactionTargetIds([]);
+    setViewerReactionStateByTargetId({});
     setRefreshRevision(0);
     setReactionFetchMeta({
       targetCount: 0,
@@ -383,11 +423,19 @@ export function useReactionTimeline(args: UseReactionTimelineArgs) {
     setReactionLoadState((current) => (current === "idle" ? "loading" : current));
   }
 
-  const rememberLocalReactionTarget = useCallback((item: TimelineItem) => {
+  const rememberLocalReactionTarget = useCallback((
+    item: TimelineItem,
+    reactionIntent: ReactionIntent,
+  ) => {
     localReactionTargetIdsRef.current = mergeReactionTargetIds(
       [item.id],
       localReactionTargetIdsRef.current,
       args.timelineLimit,
+    );
+    localViewerReactionStateByTargetIdRef.current = setViewerReactionIntent(
+      localViewerReactionStateByTargetIdRef.current,
+      item.id,
+      reactionIntent,
     );
 
     setReactionTargetIds((currentIds) => {
@@ -415,6 +463,9 @@ export function useReactionTimeline(args: UseReactionTimelineArgs) {
 
       return nextTargetIds;
     });
+    setViewerReactionStateByTargetId((current) =>
+      setViewerReactionIntent(current, item.id, reactionIntent),
+    );
 
     setReactionLoadState((current) => (current === "idle" ? "ready" : current));
     setReactionError(null);
@@ -479,6 +530,7 @@ export function useReactionTimeline(args: UseReactionTimelineArgs) {
     reactionTimeline,
     rememberLocalReactionTarget,
     resetReactionState,
+    viewerReactionStateByTargetId,
   };
 }
 
@@ -502,6 +554,95 @@ function normalizeReactionPubkey(pubkey: string | undefined) {
 
   const normalized = pubkey.trim().toLowerCase();
   return normalized.length === 64 ? normalized : null;
+}
+
+function buildViewerReactionStateByTargetId(events: NostrEvent[]) {
+  let nextStateByTargetId: Record<string, ViewerReactionState> = {};
+
+  for (const event of events) {
+    if (event.kind !== 7) {
+      continue;
+    }
+
+    const targetId = findReactionTargetId(event);
+    const reactionIntent = resolveReactionIntent(event.content);
+
+    if (!targetId || !reactionIntent) {
+      continue;
+    }
+
+    nextStateByTargetId = setViewerReactionIntent(
+      nextStateByTargetId,
+      targetId,
+      reactionIntent,
+    );
+  }
+
+  return nextStateByTargetId;
+}
+
+function mergeViewerReactionStateByTargetId(
+  current: Readonly<Record<string, ViewerReactionState>>,
+  next: Readonly<Record<string, ViewerReactionState>>,
+) {
+  let mergedStateByTargetId = { ...current };
+
+  for (const [targetId, reactionState] of Object.entries(next)) {
+    if (reactionState.like) {
+      mergedStateByTargetId = setViewerReactionIntent(
+        mergedStateByTargetId,
+        targetId,
+        "like",
+      );
+    }
+
+    if (reactionState.kusa) {
+      mergedStateByTargetId = setViewerReactionIntent(
+        mergedStateByTargetId,
+        targetId,
+        "kusa",
+      );
+    }
+  }
+
+  return mergedStateByTargetId;
+}
+
+function setViewerReactionIntent(
+  current: Readonly<Record<string, ViewerReactionState>>,
+  targetId: string,
+  reactionIntent: ReactionIntent,
+) {
+  const currentReactionState = current[targetId];
+
+  if (currentReactionState?.[reactionIntent]) {
+    return current as Record<string, ViewerReactionState>;
+  }
+
+  return {
+    ...current,
+    [targetId]: {
+      like: reactionIntent === "like" || currentReactionState?.like === true,
+      kusa: reactionIntent === "kusa" || currentReactionState?.kusa === true,
+    },
+  };
+}
+
+function viewerReactionStateByTargetIdEqual(
+  left: Readonly<Record<string, ViewerReactionState>>,
+  right: Readonly<Record<string, ViewerReactionState>>,
+) {
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+
+  if (leftKeys.length !== rightKeys.length) {
+    return false;
+  }
+
+  return leftKeys.every((targetId) => (
+    left[targetId]?.like === right[targetId]?.like
+    && left[targetId]?.kusa === right[targetId]?.kusa
+  ));
 }
 
 function rememberLiveReactionEventId(eventIds: string[], eventId: string) {

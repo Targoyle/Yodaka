@@ -58,6 +58,35 @@ export function buildVisibleTimeline(args: {
   }
 }
 
+export function buildFocusedThreadTimeline(args: {
+  focusedItem: TimelineItem | null;
+  referenceItems: TimelineItem[];
+  timelineLimit: number;
+}) {
+  if (!args.focusedItem) {
+    return [];
+  }
+
+  const focusedItem = args.focusedItem;
+  const referenceById = new Map<string, TimelineItem>([
+    [focusedItem.id, focusedItem],
+  ]);
+
+  for (const item of args.referenceItems) {
+    if (!referenceById.has(item.id)) {
+      referenceById.set(item.id, item);
+    }
+  }
+
+  const descendants = [...referenceById.values()]
+    .filter((item) => item.id !== focusedItem.id)
+    .filter((item) => isFocusedThreadDescendant(item, focusedItem.id, referenceById))
+    .sort(compareTimelineItemsDesc)
+    .slice(0, Math.max(args.timelineLimit - 1, 0));
+
+  return [focusedItem, ...descendants];
+}
+
 export function mergePersonalTimelineItems(
   followTimeline: TimelineItem[],
   accountTimeline: TimelineItem[],
@@ -93,6 +122,7 @@ export function buildAuxiliaryTimeline(args: {
     const normalizedPubkey = normalizeHexPubkey(event.pubkey);
     const existing = referenceById.get(event.id);
     const supportsReplyContext = event.kind === 1;
+    const supportsRepostContext = event.kind === 6;
     const replyContextPubkeys = supportsReplyContext
       ? findReplyContextPubkeys(event, referenceById)
       : [];
@@ -112,6 +142,18 @@ export function buildAuxiliaryTimeline(args: {
     const replyTargetProfile = replyTargetPubkey
       ? args.profileSummaries.get(replyTargetPubkey) ?? existing?.replyTargetProfile ?? null
       : null;
+    const repostTargetEventId = supportsRepostContext
+      ? findRepostTargetEventId(event)
+      : null;
+    const repostTargetPubkey = supportsRepostContext
+      ? findRepostTargetPubkey(event, referenceById)
+      : null;
+    const repostTargetRelayHints = supportsRepostContext
+      ? findRepostTargetRelayHints(event)
+      : [];
+    const repostTargetProfile = repostTargetPubkey
+      ? args.profileSummaries.get(repostTargetPubkey) ?? existing?.repostTargetProfile ?? null
+      : null;
 
     if (existing) {
       items.set(
@@ -124,6 +166,13 @@ export function buildAuxiliaryTimeline(args: {
         )
         && profilesEqual(existing.replyTargetProfile, replyTargetProfile)
         && replyContextPubkeysEqual(existing.replyContextPubkeys, replyContextPubkeys)
+        && (existing.repostTargetEventId ?? null) === repostTargetEventId
+        && (existing.repostTargetPubkey ?? null) === repostTargetPubkey
+        && repostTargetRelayHintsEqual(
+          existing.repostTargetRelayHints ?? [],
+          repostTargetRelayHints,
+        )
+        && profilesEqual(existing.repostTargetProfile ?? null, repostTargetProfile)
           ? existing
           : {
               ...existing,
@@ -132,6 +181,10 @@ export function buildAuxiliaryTimeline(args: {
               replyTargetRelayHints,
               replyTargetProfile,
               replyContextPubkeys,
+              repostTargetEventId,
+              repostTargetPubkey,
+              repostTargetRelayHints,
+              repostTargetProfile,
             },
       );
       continue;
@@ -149,6 +202,10 @@ export function buildAuxiliaryTimeline(args: {
       replyTargetRelayHints,
       replyTargetProfile,
       replyContextPubkeys,
+      repostTargetEventId,
+      repostTargetPubkey,
+      repostTargetRelayHints,
+      repostTargetProfile,
       likeCount: 0,
       kusaCount: 0,
       moreReactionCount: 0,
@@ -204,6 +261,20 @@ export function mergeAuxiliaryTimeline(args: {
       item.replyContextPubkeys.length > 0
         ? item.replyContextPubkeys
         : currentItem?.replyContextPubkeys ?? [];
+    const repostTargetEventId =
+      item.repostTargetEventId ?? currentItem?.repostTargetEventId ?? null;
+    const repostTargetPubkey =
+      item.repostTargetPubkey ?? currentItem?.repostTargetPubkey ?? null;
+    const repostTargetRelayHints =
+      item.repostTargetRelayHints && item.repostTargetRelayHints.length > 0
+        ? item.repostTargetRelayHints
+        : currentItem?.repostTargetRelayHints ?? [];
+    const latestRepostTargetProfile = repostTargetPubkey
+      ? args.profileSummaries.get(repostTargetPubkey)
+        ?? item.repostTargetProfile
+        ?? currentItem?.repostTargetProfile
+        ?? null
+      : null;
     const isReply = item.isReply || currentItem?.isReply || false;
     const notifyActorPubkey =
       currentItem?.notifyActorPubkey ?? item.notifyActorPubkey ?? null;
@@ -231,6 +302,10 @@ export function mergeAuxiliaryTimeline(args: {
       replyTargetRelayHints,
       replyTargetProfile: latestReplyTargetProfile,
       replyContextPubkeys,
+      repostTargetEventId,
+      repostTargetPubkey,
+      repostTargetRelayHints,
+      repostTargetProfile: latestRepostTargetProfile,
       profile: latestProfile,
       notifyActorPubkey,
       notifyActorProfile,
@@ -256,6 +331,13 @@ export function mergeAuxiliaryTimeline(args: {
       )
       && profilesEqual(currentItem.replyTargetProfile, mergedItem.replyTargetProfile)
       && replyContextPubkeysEqual(currentItem.replyContextPubkeys, mergedItem.replyContextPubkeys)
+      && (currentItem.repostTargetEventId ?? null) === (mergedItem.repostTargetEventId ?? null)
+      && (currentItem.repostTargetPubkey ?? null) === (mergedItem.repostTargetPubkey ?? null)
+      && repostTargetRelayHintsEqual(
+        currentItem.repostTargetRelayHints ?? [],
+        mergedItem.repostTargetRelayHints ?? [],
+      )
+      && profilesEqual(currentItem.repostTargetProfile ?? null, mergedItem.repostTargetProfile ?? null)
       && currentItem.likeCount === mergedItem.likeCount
       && (currentItem.kusaCount ?? 0) === (mergedItem.kusaCount ?? 0)
       && (currentItem.moreReactionCount ?? 0) === (mergedItem.moreReactionCount ?? 0)
@@ -288,6 +370,9 @@ export function attachProfilesToTimeline(
     const latestReplyTargetProfile = item.replyTargetPubkey
       ? profileSummaries.get(item.replyTargetPubkey) ?? item.replyTargetProfile
       : null;
+    const latestRepostTargetProfile = item.repostTargetPubkey
+      ? profileSummaries.get(item.repostTargetPubkey) ?? item.repostTargetProfile ?? null
+      : null;
     const latestNotifyActorProfile = item.notifyActorPubkey
       ? profileSummaries.get(item.notifyActorPubkey) ?? item.notifyActorProfile ?? null
       : null;
@@ -295,6 +380,7 @@ export function attachProfilesToTimeline(
     if (
       profilesEqual(item.profile, latestProfile)
       && profilesEqual(item.replyTargetProfile, latestReplyTargetProfile)
+      && profilesEqual(item.repostTargetProfile ?? null, latestRepostTargetProfile)
       && profilesEqual(item.notifyActorProfile, latestNotifyActorProfile)
     ) {
       return item;
@@ -304,6 +390,7 @@ export function attachProfilesToTimeline(
       ...item,
       profile: latestProfile,
       replyTargetProfile: latestReplyTargetProfile,
+      repostTargetProfile: latestRepostTargetProfile,
       notifyActorProfile: latestNotifyActorProfile,
     };
   });
@@ -342,6 +429,13 @@ export function timelineItemsEqual(left: TimelineItem[], right: TimelineItem[]) 
         leftItem.replyContextPubkeys,
         rightItem.replyContextPubkeys,
       )
+      || (leftItem.repostTargetEventId ?? null) !== (rightItem.repostTargetEventId ?? null)
+      || (leftItem.repostTargetPubkey ?? null) !== (rightItem.repostTargetPubkey ?? null)
+      || !repostTargetRelayHintsEqual(
+        leftItem.repostTargetRelayHints ?? [],
+        rightItem.repostTargetRelayHints ?? [],
+      )
+      || !profilesEqual(leftItem.repostTargetProfile ?? null, rightItem.repostTargetProfile ?? null)
       || leftItem.likeCount !== rightItem.likeCount
       || (leftItem.kusaCount ?? 0) !== (rightItem.kusaCount ?? 0)
       || (leftItem.moreReactionCount ?? 0) !== (rightItem.moreReactionCount ?? 0)
@@ -400,6 +494,32 @@ export function compareTimelineItemsDesc(left: TimelineItem, right: TimelineItem
   }
 
   return right.createdAt - left.createdAt;
+}
+
+function isFocusedThreadDescendant(
+  item: TimelineItem,
+  focusedEventId: string,
+  referenceById: ReadonlyMap<string, TimelineItem>,
+) {
+  let current: TimelineItem | undefined = item;
+  const seenEventIds = new Set<string>([item.id]);
+
+  while (current?.replyTargetEventId) {
+    if (current.replyTargetEventId === focusedEventId) {
+      return true;
+    }
+
+    const next = referenceById.get(current.replyTargetEventId);
+
+    if (!next || seenEventIds.has(next.id)) {
+      return false;
+    }
+
+    seenEventIds.add(next.id);
+    current = next;
+  }
+
+  return false;
 }
 
 function findReplyTargetPubkey(
@@ -461,6 +581,59 @@ function findReplyTargetPubkey(
 
 function findReplyTargetEventId(event: NostrEvent) {
   return findReplyTargetEventTag(event)?.[1] ?? null;
+}
+
+function findRepostTargetEventTag(event: NostrEvent) {
+  return listEventReferenceTags(event)[0] ?? null;
+}
+
+function findRepostTargetEventId(event: NostrEvent) {
+  return findRepostTargetEventTag(event)?.[1] ?? null;
+}
+
+function findRepostTargetRelayHints(event: NostrEvent) {
+  const relayHints: string[] = [];
+
+  const pushRelayHint = (relayHint: string | undefined) => {
+    const normalized = relayHint?.trim();
+
+    if (!normalized || relayHints.includes(normalized)) {
+      return;
+    }
+
+    relayHints.push(normalized);
+  };
+
+  const repostTargetTag = findRepostTargetEventTag(event);
+
+  if (repostTargetTag) {
+    pushRelayHint(repostTargetTag[2]);
+  }
+
+  for (const tag of listEventReferenceTags(event)) {
+    pushRelayHint(tag[2]);
+  }
+
+  return relayHints;
+}
+
+function findRepostTargetPubkey(
+  event: NostrEvent,
+  referenceById: Map<string, TimelineItem>,
+) {
+  const repostPTag = event.tags.find((tag) => tag[0] === "p");
+
+  if (repostPTag?.[1]) {
+    return normalizeHexPubkey(repostPTag[1]);
+  }
+
+  const repostTargetEventId = findRepostTargetEventId(event);
+
+  if (!repostTargetEventId) {
+    return null;
+  }
+
+  return referenceById.get(repostTargetEventId)?.pubkey ?? null;
 }
 
 function findReplyContextPubkeys(
@@ -596,6 +769,24 @@ function replyContextPubkeysEqual(left: string[], right: string[]) {
 }
 
 function replyTargetRelayHintsEqual(left: string[], right: string[]) {
+  if (left === right) {
+    return true;
+  }
+
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function repostTargetRelayHintsEqual(left: string[], right: string[]) {
   if (left === right) {
     return true;
   }

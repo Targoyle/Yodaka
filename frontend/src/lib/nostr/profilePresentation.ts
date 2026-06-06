@@ -54,6 +54,18 @@ export function formatReplyTargetLabel(item: TimelineItem) {
     ?? shortenBech32(displayPubkey);
 }
 
+export function formatRepostTargetLabel(item: TimelineItem) {
+  if (!item.repostTargetPubkey) {
+    return null;
+  }
+
+  const displayPubkey = formatPubkey(item.repostTargetPubkey);
+
+  return item.repostTargetProfile?.displayName
+    ?? item.repostTargetProfile?.name
+    ?? shortenBech32(displayPubkey);
+}
+
 export function formatReplyContextLabel(item: TimelineItem) {
   const replyTargetLabel = formatReplyTargetLabel(item);
 
@@ -66,6 +78,14 @@ export function formatReplyContextLabel(item: TimelineItem) {
   }
 
   return null;
+}
+
+export function formatRepostContextLabel(item: TimelineItem) {
+  if (item.kind !== 6) {
+    return null;
+  }
+
+  return `${formatAuthorLabel(item, formatPubkey(item.pubkey))} がリポスト`;
 }
 
 export function formatAvatarLabel(item: TimelineItem, displayPubkey: string) {

@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   FEED_EOSE_TIMEOUT_MS,
   MAX_PROFILE_AUTHORS_PER_REQ,
+  MAX_RELAY_RECONNECT_ATTEMPTS,
   PROFILE_SUBSCRIPTION_TIMEOUT_MS,
+  RELAY_RECONNECT_COOLDOWN_MS,
   RELAY_OPEN_TIMEOUT_MS,
   RelayClient,
   TEMPORARY_SUBSCRIPTION_TIMEOUT_MS,
@@ -329,6 +331,77 @@ describe("RelayClient", () => {
 
     expect(MockWebSocket.instances).toHaveLength(2);
     expect(statuses.at(-1)?.phase).toBe("connecting");
+  });
+
+  it("連続失敗は一定回数で cooldown に入り、その後に再接続を再開する", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+
+    const statuses: RelayStatus[] = [];
+    const client = createRelayClient({
+      onStatus: (status: RelayStatus) => {
+        statuses.push(status);
+      },
+    });
+
+    client.connect();
+
+    const firstSocket = MockWebSocket.instances[0];
+    firstSocket.emitError();
+    await flushAsync();
+
+    expect(statuses.at(-1)).toMatchObject({
+      phase: "reconnecting",
+      attempt: 1,
+      retryInMs: 1_000,
+      detail: "reconnecting: relay error",
+    });
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    const secondSocket = MockWebSocket.instances[1];
+    secondSocket.emitError();
+    await flushAsync();
+
+    expect(statuses.at(-1)).toMatchObject({
+      phase: "reconnecting",
+      attempt: 2,
+      retryInMs: 2_000,
+      detail: "reconnecting: relay error",
+    });
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    const thirdSocket = MockWebSocket.instances[2];
+    thirdSocket.emitError();
+    await flushAsync();
+
+    expect(statuses.at(-1)).toMatchObject({
+      phase: "reconnecting",
+      attempt: 3,
+      retryInMs: 4_000,
+      detail: "reconnecting: relay error",
+    });
+
+    await vi.advanceTimersByTimeAsync(4_000);
+    const fourthSocket = MockWebSocket.instances[3];
+    fourthSocket.emitError();
+    await flushAsync();
+
+    expect(statuses.at(-1)).toMatchObject({
+      phase: "reconnecting",
+      attempt: MAX_RELAY_RECONNECT_ATTEMPTS,
+      retryInMs: RELAY_RECONNECT_COOLDOWN_MS,
+      detail: `reconnect paused after ${MAX_RELAY_RECONNECT_ATTEMPTS} attempts: relay error`,
+    });
+
+    await vi.advanceTimersByTimeAsync(RELAY_RECONNECT_COOLDOWN_MS - 1);
+    expect(MockWebSocket.instances).toHaveLength(4);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(MockWebSocket.instances).toHaveLength(5);
+    expect(statuses.at(-1)).toMatchObject({
+      phase: "connecting",
+      attempt: 0,
+    });
   });
 
   it("feed 購読で connecting -> subscribing -> live へ遷移する", async () => {
@@ -862,6 +935,141 @@ describe("RelayClient", () => {
 
     const closeFrames = sentFrames(socket).filter((frame) => frame[0] === "CLOSE");
     expect(closeFrames).toContainEqual(["CLOSE", subscriptionId]);
+  });
+
+  it("temporary events 要求は接続中なら open 後に同じ socket へ送る", async () => {
+    const client = createRelayClient();
+    client.connect();
+    const socket = MockWebSocket.instances[0];
+
+    const requestPromise = client.requestTemporaryEvents([
+      {
+        kinds: [1],
+        authors: ["expected-author"],
+        limit: 10,
+      },
+    ]);
+
+    expect(
+      sentFrames(socket).find(
+        (frame) =>
+          frame[0] === "REQ"
+          && isRecord(frame[2])
+          && Array.isArray(frame[2].kinds)
+          && frameHasAuthor(frame[2], "expected-author"),
+      ),
+    ).toBeUndefined();
+
+    socket.emitOpen();
+    await flushAsync();
+
+    const temporaryRequest = sentFrames(socket).find(
+      (frame) =>
+        frame[0] === "REQ"
+        && isRecord(frame[2])
+        && Array.isArray(frame[2].kinds)
+        && frame[2].kinds[0] === 1
+        && frameHasAuthor(frame[2], "expected-author"),
+    );
+    const subscriptionId = temporaryRequest?.[1] as string;
+
+    expect(subscriptionId).toBeTruthy();
+
+    socket.emitMessage(
+      JSON.stringify([
+        "EVENT",
+        subscriptionId,
+        {
+          id: "queued-temporary-event-id",
+          pubkey: "expected-author",
+          created_at: 1703184271,
+          kind: 1,
+          tags: [],
+          content: "hello queued temporary",
+          sig: "sig",
+        },
+      ]),
+    );
+    socket.emitMessage(JSON.stringify(["EOSE", subscriptionId]));
+
+    await expect(requestPromise).resolves.toEqual([
+      {
+        id: "queued-temporary-event-id",
+        pubkey: "expected-author",
+        created_at: 1703184271,
+        kind: 1,
+        tags: [],
+        content: "hello queued temporary",
+        sig: "sig",
+      },
+    ]);
+  });
+
+  it("temporary 要求は再接続待ち中でも次の接続まで保留する", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+
+    const client = createRelayClient();
+    client.connect();
+    const firstSocket = MockWebSocket.instances[0];
+
+    firstSocket.emitError();
+    await flushAsync();
+    firstSocket.emitClose();
+    await flushAsync();
+
+    const requestPromise = client.requestTemporaryEvents([
+      {
+        kinds: [1],
+        authors: ["expected-author"],
+        limit: 10,
+      },
+    ]);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    const secondSocket = MockWebSocket.instances[1];
+    secondSocket.emitOpen();
+    await flushAsync();
+
+    const temporaryRequest = sentFrames(secondSocket).find(
+      (frame) =>
+        frame[0] === "REQ"
+        && isRecord(frame[2])
+        && Array.isArray(frame[2].kinds)
+        && frame[2].kinds[0] === 1
+        && frameHasAuthor(frame[2], "expected-author"),
+    );
+    const subscriptionId = temporaryRequest?.[1] as string;
+
+    secondSocket.emitMessage(
+      JSON.stringify([
+        "EVENT",
+        subscriptionId,
+        {
+          id: "reconnected-temporary-event-id",
+          pubkey: "expected-author",
+          created_at: 1703184271,
+          kind: 1,
+          tags: [],
+          content: "hello after reconnect",
+          sig: "sig",
+        },
+      ]),
+    );
+    secondSocket.emitMessage(JSON.stringify(["EOSE", subscriptionId]));
+
+    await expect(requestPromise).resolves.toEqual([
+      {
+        id: "reconnected-temporary-event-id",
+        pubkey: "expected-author",
+        created_at: 1703184271,
+        kind: 1,
+        tags: [],
+        content: "hello after reconnect",
+        sig: "sig",
+      },
+    ]);
   });
 
   it("temporary latest 要求は新しい event を返す", async () => {

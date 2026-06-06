@@ -1,5 +1,36 @@
 import { describe, expect, it } from "vitest";
-import { extractReadRelayUrlsFromRelayListEvent } from "./eventDebug";
+import {
+  buildEventLookupRelayUrls,
+  extractReadRelayUrlsFromRelayListEvent,
+} from "./eventDebug";
+
+describe("buildEventLookupRelayUrls", () => {
+  it("managed relay は全部残し、追加 hint relay は件数を絞る", () => {
+    expect(
+      buildEventLookupRelayUrls(
+        [
+          "wss://read-a.example",
+          "wss://read-b.example/",
+        ],
+        [
+          "wss://read-a.example/",
+          "wss://hint-a.example",
+          "wss://hint-b.example/",
+          "wss://hint-c.example",
+          "wss://hint-d.example",
+          "wss://hint-e.example",
+        ],
+      ),
+    ).toEqual([
+      "wss://read-a.example/",
+      "wss://read-b.example/",
+      "wss://hint-a.example/",
+      "wss://hint-b.example/",
+      "wss://hint-c.example/",
+      "wss://hint-d.example/",
+    ]);
+  });
+});
 
 describe("extractReadRelayUrlsFromRelayListEvent", () => {
   it("returns read relays and excludes write-only relays", () => {

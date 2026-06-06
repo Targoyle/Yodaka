@@ -9,7 +9,10 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import type { AuxiliaryTimelineDiagnostic, TimelineView } from "../app/types";
-import type { ReactionIntent } from "../lib/nostr/reaction";
+import type {
+  ReactionIntent,
+  ViewerReactionState,
+} from "../lib/nostr/reaction";
 import { formatRecordedAt } from "../lib/ui/formatters";
 import type { TimelineItem } from "../lib/wasm/client";
 import type {
@@ -43,8 +46,10 @@ type TimelinePanelProps = {
   isPublishing: boolean;
   notifyTabEnabled: boolean;
   onCopyEventId: (eventId: string) => void | Promise<void>;
+  onRepost: (item: TimelineItem) => void | Promise<void>;
   onReply: (item: TimelineItem) => void | Promise<void>;
   pendingReactionEventIds: string[];
+  pendingReactionIntentsByEventId: Record<string, ReactionIntent>;
   physicsEnabled: boolean;
   readyWriteRelayCount: number;
   reactionTabEnabled: boolean;
@@ -54,6 +59,7 @@ type TimelinePanelProps = {
   timelineHeadingLabel: string;
   timelineReferenceItems: TimelineItem[];
   timelineView: TimelineView;
+  viewerReactionStateByTargetId: Record<string, ViewerReactionState>;
   onReact: (item: TimelineItem, reactionIntent: ReactionIntent) => void | Promise<void>;
   onTimelineViewChange: (view: TimelineView) => void | Promise<void>;
   onViewEventJson: (item: TimelineItem) => void | Promise<void>;
@@ -927,17 +933,20 @@ export function TimelinePanel(props: TimelinePanelProps) {
         onCopyEventId={props.onCopyEventId}
         onPauseTimelineDisplay={pauseTimelineDisplay}
         onPointerDown={options.onPointerDown}
+        onRepost={props.onRepost}
         onReply={props.onReply}
         onReact={props.onReact}
         onResumeTimelineDisplay={resumeTimelineDisplay}
         onViewEventJson={props.onViewEventJson}
         pendingReactionEventIds={props.pendingReactionEventIds}
+        pendingReactionIntentsByEventId={props.pendingReactionIntentsByEventId}
         physicsMode={options.physicsMode}
         readyWriteRelayCount={props.readyWriteRelayCount}
         referenceItemsById={referenceById}
         replyPreviewStatuses={props.replyPreviewStatuses}
         style={options.style}
         timelineView={props.timelineView}
+        viewerReactionStateByTargetId={props.viewerReactionStateByTargetId}
       />
     );
   }

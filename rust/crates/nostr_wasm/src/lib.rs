@@ -1,7 +1,8 @@
 use std::cell::RefCell;
 
 use nostr_core::{
-    CoreError, LocalSignerSession, Timeline, build_unsigned_event, verify_event,
+    CoreError, LocalSignerSession, Timeline, build_unsigned_event, presign_unsigned_event,
+    verify_event,
     verify_profile_summary_event,
 };
 use wasm_bindgen::prelude::*;
@@ -48,6 +49,18 @@ pub fn build_unsigned_event_export(
     kind: u32,
 ) -> Result<String, JsValue> {
     build_unsigned_event_js(pubkey, content, tags_json, kind)
+}
+
+#[wasm_bindgen]
+pub fn presign_unsigned_event_js(unsigned_event_json: &str) -> Result<String, JsValue> {
+    presign_unsigned_event(unsigned_event_json).map_err(map_error)
+}
+
+#[wasm_bindgen(js_name = presign_unsigned_event)]
+pub fn presign_unsigned_event_export(
+    unsigned_event_json: &str,
+) -> Result<String, JsValue> {
+    presign_unsigned_event_js(unsigned_event_json)
 }
 
 #[wasm_bindgen]

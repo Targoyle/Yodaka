@@ -10,6 +10,10 @@ declare module "@wasm/nostr_wasm.js" {
     kind: number,
   ): string;
 
+  export function presign_unsigned_event(
+    unsignedEventJson: string,
+  ): string;
+
   export function verify_and_insert(eventJson: string): boolean;
 
   export function list_timeline(limit: number, until?: number): string;
@@ -33,9 +37,10 @@ declare global {
   interface Window {
     nostr?: {
       getPublicKey(): Promise<string>;
-      signEvent(event: import("./lib/nostr/signer").UnsignedNostrEvent): Promise<
-        import("./lib/nostr/signer").SignedNostrEvent
-      >;
+      signEvent(event:
+        | import("./lib/nostr/signer").UnsignedNostrEvent
+        | import("./lib/nostr/signer").PresignedNostrEvent
+      ): Promise<import("./lib/nostr/signer").SignedNostrEvent>;
     };
   }
 }

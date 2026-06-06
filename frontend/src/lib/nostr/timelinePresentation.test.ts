@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildAuxiliaryTimeline,
+  buildFocusedThreadTimeline,
   buildVisibleTimeline,
   mergeAuxiliaryTimeline,
 } from "./timelinePresentation";
@@ -316,6 +317,43 @@ describe("buildAuxiliaryTimeline", () => {
     ]);
   });
 
+  it("derives repost target metadata from NIP-18 tags", () => {
+    const repostTargetPubkey = "e".repeat(64);
+    const repostEvent: NostrEvent = {
+      id: "repost-id",
+      pubkey: "a".repeat(64),
+      created_at: 2,
+      kind: 6,
+      tags: [
+        ["e", "target-id", "wss://relay.example/"],
+        ["p", repostTargetPubkey],
+      ],
+      content: "",
+      sig: "sig",
+    };
+
+    const [repostItem] = buildAuxiliaryTimeline({
+      events: [repostEvent],
+      profileSummaries: new Map([
+        [
+          repostTargetPubkey,
+          {
+            name: null,
+            displayName: "Target User",
+            picture: null,
+          },
+        ],
+      ]),
+      referenceItems: [],
+      timelineLimit: 20,
+    });
+
+    expect(repostItem?.repostTargetEventId).toBe("target-id");
+    expect(repostItem?.repostTargetPubkey).toBe(repostTargetPubkey);
+    expect(repostItem?.repostTargetRelayHints).toEqual(["wss://relay.example/"]);
+    expect(repostItem?.repostTargetProfile?.displayName).toBe("Target User");
+  });
+
   it("preserves reply context when merging with relay snapshot items", () => {
     const currentItem: TimelineItem = {
       id: "reply-id",
@@ -522,5 +560,117 @@ describe("buildAuxiliaryTimeline", () => {
     });
 
     expect(items.map((item) => item.id)).toEqual(["notify-post"]);
+  });
+});
+
+describe("buildFocusedThreadTimeline", () => {
+  it("includes focused item and its descendant replies", () => {
+    const focusedItem: TimelineItem = {
+      id: "focused-id",
+      pubkey: "a".repeat(64),
+      createdAt: 10,
+      kind: 1,
+      content: "focused",
+      isReply: false,
+      replyTargetEventId: null,
+      replyTargetPubkey: null,
+      replyTargetProfile: null,
+      replyContextPubkeys: [],
+      likeCount: 0,
+      profile: null,
+    };
+    const directReply: TimelineItem = {
+      id: "direct-reply-id",
+      pubkey: "b".repeat(64),
+      createdAt: 20,
+      kind: 1,
+      content: "direct reply",
+      isReply: true,
+      replyTargetEventId: focusedItem.id,
+      replyTargetPubkey: focusedItem.pubkey,
+      replyTargetProfile: null,
+      replyContextPubkeys: [focusedItem.pubkey],
+      likeCount: 0,
+      profile: null,
+    };
+    const nestedReply: TimelineItem = {
+      id: "nested-reply-id",
+      pubkey: "c".repeat(64),
+      createdAt: 30,
+      kind: 1,
+      content: "nested reply",
+      isReply: true,
+      replyTargetEventId: directReply.id,
+      replyTargetPubkey: directReply.pubkey,
+      replyTargetProfile: null,
+      replyContextPubkeys: [directReply.pubkey],
+      likeCount: 0,
+      profile: null,
+    };
+    const unrelatedItem: TimelineItem = {
+      id: "unrelated-id",
+      pubkey: "d".repeat(64),
+      createdAt: 40,
+      kind: 1,
+      content: "unrelated",
+      isReply: false,
+      replyTargetEventId: null,
+      replyTargetPubkey: null,
+      replyTargetProfile: null,
+      replyContextPubkeys: [],
+      likeCount: 0,
+      profile: null,
+    };
+
+    expect(
+      buildFocusedThreadTimeline({
+        focusedItem,
+        referenceItems: [nestedReply, unrelatedItem, directReply],
+        timelineLimit: 10,
+      }).map((item) => item.id),
+    ).toEqual([
+      focusedItem.id,
+      nestedReply.id,
+      directReply.id,
+    ]);
+  });
+
+  it("returns only the focused item when descendants cannot be resolved", () => {
+    const focusedItem: TimelineItem = {
+      id: "focused-id",
+      pubkey: "a".repeat(64),
+      createdAt: 10,
+      kind: 1,
+      content: "focused",
+      isReply: false,
+      replyTargetEventId: null,
+      replyTargetPubkey: null,
+      replyTargetProfile: null,
+      replyContextPubkeys: [],
+      likeCount: 0,
+      profile: null,
+    };
+    const orphanReply: TimelineItem = {
+      id: "orphan-reply-id",
+      pubkey: "b".repeat(64),
+      createdAt: 20,
+      kind: 1,
+      content: "orphan reply",
+      isReply: true,
+      replyTargetEventId: "missing-parent-id",
+      replyTargetPubkey: "c".repeat(64),
+      replyTargetProfile: null,
+      replyContextPubkeys: ["c".repeat(64)],
+      likeCount: 0,
+      profile: null,
+    };
+
+    expect(
+      buildFocusedThreadTimeline({
+        focusedItem,
+        referenceItems: [orphanReply],
+        timelineLimit: 10,
+      }).map((item) => item.id),
+    ).toEqual([focusedItem.id]);
   });
 });

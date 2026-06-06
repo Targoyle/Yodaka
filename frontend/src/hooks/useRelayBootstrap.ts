@@ -170,7 +170,7 @@ export function useRelayBootstrap(args: UseRelayBootstrapArgs) {
     ).length;
   }, [relayStatus]);
 
-  const selectReactionRelayHint = useCallback(() => {
+  const selectReferenceRelayHint = useCallback(() => {
     const readRelayUrls = readRelayUrlsRef.current;
     const writeRelayUrls = writeRelayUrlsRef.current;
 
@@ -1123,7 +1123,7 @@ export function useRelayBootstrap(args: UseRelayBootstrapArgs) {
     relayDiagnostics,
     relayStatus,
     scheduleRefreshRef,
-    selectReactionRelayHint,
+    selectReferenceRelayHint,
     syncStatus,
     timeline,
     timelineRef,

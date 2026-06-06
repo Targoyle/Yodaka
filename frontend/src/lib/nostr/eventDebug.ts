@@ -1,18 +1,34 @@
 import type { TimelineItem } from "../wasm/client";
 import type { RelayOneShotTransport } from "./contacts";
-import { requestDirectEvents } from "./directRelayFallback";
 import { normalizeRelayUrls } from "./contacts";
 import type { NostrEvent } from "./relay";
 import { normalizeHexPubkey } from "./pubkey";
 
 const DEBUG_EVENT_REQUEST_TIMEOUT_MS = 8_000;
 const DEBUG_RELAY_LIST_REQUEST_TIMEOUT_MS = 8_000;
+const MAX_EVENT_LOOKUP_HINT_RELAYS = 4;
+
+export function buildEventLookupRelayUrls(
+  baseRelayUrls: string[],
+  hintRelayUrls: string[],
+) {
+  const normalizedBaseRelayUrls = normalizeRelayUrls(baseRelayUrls);
+  const baseRelaySet = new Set(normalizedBaseRelayUrls);
+  const normalizedHintRelayUrls = normalizeRelayUrls(hintRelayUrls)
+    .filter((relayUrl) => !baseRelaySet.has(relayUrl))
+    .slice(0, MAX_EVENT_LOOKUP_HINT_RELAYS);
+
+  return [
+    ...normalizedBaseRelayUrls,
+    ...normalizedHintRelayUrls,
+  ];
+}
 
 export async function fetchLatestEventByIdAcrossRelays(
   relayUrls: string[],
   eventId: string,
   transport: RelayOneShotTransport,
-  options?: {
+  _options?: {
     allowDirectFallback?: boolean;
   },
 ) {
@@ -22,15 +38,18 @@ export async function fetchLatestEventByIdAcrossRelays(
     return null;
   }
 
+  const requests = normalizedRelays.map((relayUrl) =>
+    transport.requestTemporaryLatestEvent!(
+      relayUrl,
+      [{ ids: [eventId], limit: 1 }],
+      DEBUG_EVENT_REQUEST_TIMEOUT_MS,
+    ),
+  );
+
   try {
     return await Promise.any(
-      normalizedRelays.map(async (relayUrl) => {
-        const event = await transport.requestTemporaryLatestEvent!(
-          relayUrl,
-          [{ ids: [eventId], limit: 1 }],
-          DEBUG_EVENT_REQUEST_TIMEOUT_MS,
-        );
-
+      requests.map(async (request) => {
+        const event = await request;
         if (!event) {
           throw new Error("event not found");
         }
@@ -39,18 +58,10 @@ export async function fetchLatestEventByIdAcrossRelays(
       }),
     );
   } catch {
-    // どの read relay でも見つからなかった場合だけ、従来の fallback へ進む
+    // どの relay でも見つからなかった場合は全結果を確認して最新候補を選ぶ
   }
 
-  const settled = await Promise.allSettled(
-    normalizedRelays.map((relayUrl) =>
-      transport.requestTemporaryLatestEvent!(
-        relayUrl,
-        [{ ids: [eventId], limit: 1 }],
-        DEBUG_EVENT_REQUEST_TIMEOUT_MS,
-      ),
-    ),
-  );
+  const settled = await Promise.allSettled(requests);
 
   let latestEvent: NostrEvent | null = null;
 
@@ -71,47 +82,6 @@ export async function fetchLatestEventByIdAcrossRelays(
     }
   }
 
-  if (latestEvent || !options?.allowDirectFallback) {
-    return latestEvent;
-  }
-
-  const directSettled = await Promise.allSettled(
-    normalizedRelays.map((relayUrl) =>
-      requestDirectEvents(
-        relayUrl,
-        { ids: [eventId], limit: 1 },
-        DEBUG_EVENT_REQUEST_TIMEOUT_MS,
-        {
-          timeout: "event id direct fetch timed out",
-          failed: "event id direct fetch failed",
-          disconnected: "event id direct fetch disconnected",
-        },
-      ),
-    ),
-  );
-
-  for (const result of directSettled) {
-    if (result.status !== "fulfilled" || result.value.length === 0) {
-      continue;
-    }
-
-    const candidate = result.value[0];
-
-    if (
-      candidate
-      && (
-        !latestEvent
-        || candidate.created_at > latestEvent.created_at
-        || (
-          candidate.created_at === latestEvent.created_at
-          && candidate.id > latestEvent.id
-        )
-      )
-    ) {
-      latestEvent = candidate;
-    }
-  }
-
   return latestEvent;
 }
 
@@ -119,6 +89,7 @@ export async function fetchLatestEventByIdViaAuthorRelays(args: {
   authorPubkey: string | null | undefined;
   baseRelayUrls: string[];
   eventId: string;
+  relayListLookupRelayUrls?: string[];
   transport: RelayOneShotTransport;
   options?: {
     allowDirectFallback?: boolean;
@@ -141,8 +112,16 @@ export async function fetchLatestEventByIdViaAuthorRelays(args: {
     return null;
   }
 
+  const relayListLookupRelayUrls = normalizeRelayUrls(
+    args.relayListLookupRelayUrls ?? args.baseRelayUrls,
+  );
+
+  if (relayListLookupRelayUrls.length === 0) {
+    return null;
+  }
+
   const relayListUrls = await fetchReadRelayUrlsByPubkey(
-    args.baseRelayUrls,
+    relayListLookupRelayUrls,
     authorPubkey,
     args.transport,
     args.options,
@@ -173,7 +152,7 @@ export async function fetchReadRelayUrlsByPubkey(
   relayUrls: string[],
   pubkey: string,
   transport: RelayOneShotTransport,
-  options?: {
+  _options?: {
     allowDirectFallback?: boolean;
   },
 ) {
@@ -214,49 +193,6 @@ export async function fetchReadRelayUrlsByPubkey(
       )
     ) {
       latestEvent = result.value;
-    }
-  }
-
-  if (!latestEvent && options?.allowDirectFallback) {
-    const directSettled = await Promise.allSettled(
-      normalizedRelays.map((relayUrl) =>
-        requestDirectEvents(
-          relayUrl,
-          {
-            kinds: [10002],
-            authors: [normalizedPubkey],
-            limit: 1,
-          },
-          DEBUG_RELAY_LIST_REQUEST_TIMEOUT_MS,
-          {
-            timeout: "relay list direct fetch timed out",
-            failed: "relay list direct fetch failed",
-            disconnected: "relay list direct fetch disconnected",
-          },
-        ),
-      ),
-    );
-
-    for (const result of directSettled) {
-      if (result.status !== "fulfilled" || result.value.length === 0) {
-        continue;
-      }
-
-      const candidate = result.value[0];
-
-      if (
-        candidate
-        && (
-          !latestEvent
-          || candidate.created_at > latestEvent.created_at
-          || (
-            candidate.created_at === latestEvent.created_at
-            && candidate.id > latestEvent.id
-          )
-        )
-      ) {
-        latestEvent = candidate;
-      }
     }
   }
 

@@ -1,6 +1,7 @@
 import { normalizeHexPubkey } from "./pubkey";
 import {
   localSignerPubkey,
+  presignUnsignedEvent,
   signUnsignedEventWithLocalSigner,
 } from "../wasm/client";
 
@@ -10,6 +11,10 @@ export type UnsignedNostrEvent = {
   kind: number;
   tags: string[][];
   content: string;
+};
+
+export type PresignedNostrEvent = UnsignedNostrEvent & {
+  id: string;
 };
 
 export type SignedNostrEvent = UnsignedNostrEvent & {
@@ -45,7 +50,22 @@ export class Nip07Signer implements NostrSigner {
       throw new UnsupportedSignerError("NIP-07 provider が見つかりません");
     }
 
-    return window.nostr.signEvent(event);
+    const presigned = await presignUnsignedEvent({
+      pubkey: event.pubkey,
+      createdAt: event.created_at,
+      kind: event.kind,
+      tags: event.tags,
+      content: event.content,
+    });
+
+    return window.nostr.signEvent({
+      id: presigned.id,
+      pubkey: presigned.pubkey,
+      created_at: presigned.createdAt,
+      kind: presigned.kind,
+      tags: presigned.tags,
+      content: presigned.content,
+    });
   }
 }
 

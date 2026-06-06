@@ -5,7 +5,7 @@ use std::net::IpAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nostr::secp256k1::Secp256k1;
-use nostr::{Event, JsonUtil, Kind};
+use nostr::{Event, JsonUtil, Kind, UnsignedEvent as NostrUnsignedEvent};
 use serde::{Deserialize, Serialize};
 
 use crate::CoreError;
@@ -25,6 +25,16 @@ pub const MAX_STORED_REACTION_EVENTS: usize = 10_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnsignedEvent {
+    pub pubkey: String,
+    pub created_at: u64,
+    pub kind: u32,
+    pub tags: Vec<Vec<String>>,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PresignedEvent {
+    pub id: String,
     pub pubkey: String,
     pub created_at: u64,
     pub kind: u32,
@@ -657,6 +667,47 @@ pub fn build_unsigned_event(
     tags_json: &str,
     kind: u32,
 ) -> Result<String, CoreError> {
+    serde_json::to_string(&build_unsigned_event_data(pubkey, content, tags_json, kind)?)
+        .map_err(CoreError::InvalidEventJson)
+}
+
+pub fn presign_unsigned_event(unsigned_event_json: &str) -> Result<String, CoreError> {
+    let unsigned: UnsignedEvent =
+        serde_json::from_str(unsigned_event_json).map_err(CoreError::InvalidEventJson)?;
+
+    if unsigned.pubkey.is_empty() {
+        return Err(CoreError::MissingPubkey);
+    }
+
+    if unsigned.content.is_empty() && !kind_allows_empty_content(unsigned.kind) {
+        return Err(CoreError::MissingContent);
+    }
+
+    validate_content_limit(&unsigned.content)?;
+    validate_tag_matrix(&unsigned.tags)?;
+
+    let event_id = NostrUnsignedEvent::from_json(unsigned_event_json)
+        .map_err(|_| CoreError::InvalidUnsignedEventJson)?
+        .id()
+        .to_hex();
+    let presigned = PresignedEvent {
+        id: event_id,
+        pubkey: unsigned.pubkey,
+        created_at: unsigned.created_at,
+        kind: unsigned.kind,
+        tags: unsigned.tags,
+        content: unsigned.content,
+    };
+
+    serde_json::to_string(&presigned).map_err(CoreError::InvalidEventJson)
+}
+
+fn build_unsigned_event_data(
+    pubkey: &str,
+    content: &str,
+    tags_json: &str,
+    kind: u32,
+) -> Result<UnsignedEvent, CoreError> {
     if pubkey.is_empty() {
         return Err(CoreError::MissingPubkey);
     }
@@ -672,15 +723,13 @@ pub fn build_unsigned_event(
 
     validate_tag_matrix(&tags)?;
 
-    let event = UnsignedEvent {
+    Ok(UnsignedEvent {
         pubkey: pubkey.to_owned(),
         created_at: current_unix_timestamp(),
         kind,
         tags,
         content: content.to_owned(),
-    };
-
-    serde_json::to_string(&event).map_err(CoreError::InvalidEventJson)
+    })
 }
 
 fn validate_verified_event_limits(event: &Event) -> Result<(), CoreError> {
@@ -818,11 +867,11 @@ fn verify_profile_event_impl(event_json: &str) -> Result<Option<Event>, CoreErro
 }
 
 fn accepts_kind(kind: u32) -> bool {
-    matches!(kind, 0 | 1 | 7)
+    matches!(kind, 0 | 1 | 6 | 7)
 }
 
 fn kind_allows_empty_content(kind: u32) -> bool {
-    matches!(kind, 7)
+    matches!(kind, 6 | 7 | 16)
 }
 
 fn normalize_optional_string(value: Option<String>) -> Option<String> {
@@ -1107,11 +1156,16 @@ fn is_kusa_reaction_event(event: &StoredEvent) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use nostr::{EventBuilder, JsonUtil, Keys, Metadata, SecretKey, Tag, Timestamp, Url};
+    use nostr::{
+        EventBuilder, JsonUtil, Keys, Kind, Metadata, SecretKey, Tag, Timestamp,
+        UnsignedEvent as NostrUnsignedEvent, Url,
+    };
 
     use super::{
-        MAX_CONTENT_BYTES, MAX_TAG_VALUE_BYTES, ReactionSummary, SINCE_BUFFER_SEC, Timeline,
-        build_unsigned_event, current_unix_timestamp, sanitize_profile_picture_url, verify_event,
+        MAX_CONTENT_BYTES, MAX_TAG_VALUE_BYTES, PresignedEvent, ReactionSummary,
+        SINCE_BUFFER_SEC, Timeline, UnsignedEvent, build_unsigned_event,
+        current_unix_timestamp, presign_unsigned_event, sanitize_profile_picture_url,
+        verify_event,
     };
 
     #[test]
@@ -1332,6 +1386,89 @@ mod tests {
 
         assert!(json.contains(r#""kind":7"#));
         assert!(json.contains(r#""content":"""#));
+    }
+
+    #[test]
+    fn build_unsigned_event_allows_empty_repost_content() {
+        let json = build_unsigned_event(
+            "alice",
+            "",
+            r#"[["e","root-id","wss://relay.example/"],["p","bob"]]"#,
+            6,
+        )
+        .expect("repost event should allow empty content");
+
+        assert!(json.contains(r#""kind":6"#));
+        assert!(json.contains(r#""content":"""#));
+    }
+
+    #[test]
+    fn presign_unsigned_event_includes_canonical_event_id() {
+        let pubkey = "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa";
+        let unsigned_json = serde_json::to_string(&UnsignedEvent {
+            pubkey: pubkey.to_owned(),
+            created_at: 1_717_777_777,
+            kind: 6,
+            tags: vec![
+                vec!["e".to_owned(), "root-id".to_owned(), "wss://relay.example/".to_owned()],
+                vec![
+                    "p".to_owned(),
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .to_owned(),
+                ],
+            ],
+            content: String::new(),
+        })
+        .expect("unsigned event json should serialize");
+        let json = presign_unsigned_event(&unsigned_json)
+            .expect("presigned event should build");
+        let presigned: PresignedEvent =
+            serde_json::from_str(&json).expect("presigned event json should parse");
+        let expected_unsigned_json = serde_json::to_string(&UnsignedEvent {
+            pubkey: presigned.pubkey.clone(),
+            created_at: presigned.created_at,
+            kind: presigned.kind,
+            tags: presigned.tags.clone(),
+            content: presigned.content.clone(),
+        })
+        .expect("unsigned event json should serialize");
+        let expected_id = NostrUnsignedEvent::from_json(&expected_unsigned_json)
+            .expect("unsigned event should parse")
+            .id()
+            .to_hex();
+
+        assert_eq!(presigned.id, expected_id);
+        assert_eq!(presigned.kind, 6);
+        assert_eq!(presigned.content, "");
+    }
+
+    #[test]
+    fn verify_event_accepts_signed_repost() {
+        let repost_keys =
+            test_keys("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let target_keys =
+            test_keys("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let repost = EventBuilder::new(Kind::Repost, "")
+            .tag(
+                Tag::parse(["e", "target-id", "wss://relay.example/"])
+                    .expect("e tag should parse"),
+            )
+            .tag(
+                Tag::parse(["p", &target_keys.public_key().to_hex()])
+                    .expect("p tag should parse"),
+            )
+            .custom_created_at(Timestamp::from_secs(100))
+            .sign_with_keys(&repost_keys)
+            .expect("repost should sign");
+        let mut timeline = Timeline::new();
+
+        assert!(verify_event(&repost.as_json()).expect("signed repost should verify"));
+        assert!(
+            !timeline
+                .verify_and_insert(&repost.as_json())
+                .expect("repost verify_and_insert should succeed"),
+            "repost is verified but not inserted into the note feed yet",
+        );
     }
 
     #[test]

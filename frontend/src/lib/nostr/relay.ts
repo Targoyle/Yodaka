@@ -136,6 +136,8 @@ type RelayMessageInspection = {
 
 const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_CAP_MS = 60_000;
+export const MAX_RELAY_RECONNECT_ATTEMPTS = 3;
+export const RELAY_RECONNECT_COOLDOWN_MS = 30_000;
 const MAX_RELAY_MESSAGE_BYTES = 128 * 1024;
 const MAX_EVENT_CONTENT_BYTES = 8 * 1024;
 const MAX_EVENT_TAGS = 64;
@@ -163,6 +165,7 @@ type TemporaryEventsSubscription = {
   filters: RelayFilter[];
   events: Map<string, NostrEvent>;
   latestEvent: null;
+  requested: boolean;
   resolve: (value: NostrEvent[]) => void;
   reject: (error: Error) => void;
   timeoutId: ReturnType<typeof setTimeout>;
@@ -173,6 +176,7 @@ type TemporaryLatestSubscription = {
   filters: RelayFilter[];
   events: Map<string, NostrEvent>;
   latestEvent: NostrEvent | null;
+  requested: boolean;
   resolve: (value: NostrEvent | null) => void;
   reject: (error: Error) => void;
   timeoutId: ReturnType<typeof setTimeout>;
@@ -233,6 +237,7 @@ export class RelayClient {
   connect() {
     this.manuallyClosed = false;
     this.clearReconnectTimer();
+    this.attempt = 0;
     this.openSocket();
   }
 
@@ -518,6 +523,12 @@ export class RelayClient {
         return;
       }
 
+      this.attempt = 0;
+
+      const pendingTemporarySubscriptionIds = [
+        ...this.temporarySubscriptions.keys(),
+      ];
+
       this.subscriptions.clear();
       this.feedSubscriptionFilters.clear();
       this.notifySubscriptionFilters.clear();
@@ -526,9 +537,14 @@ export class RelayClient {
       this.currentNotifySubscriptionId = null;
       this.currentReactionSubscriptionId = null;
 
+      for (const subscriptionId of pendingTemporarySubscriptionIds) {
+        this.subscriptions.set(subscriptionId, "temporary");
+      }
+
       if (!filters || filters.length === 0) {
         this.rebuildNotifySubscription(socket);
         this.rebuildReactionSubscription(socket);
+        this.flushPendingTemporarySubscriptions(socket);
         this.updateStatus({
           phase: "live",
           relayUrl: this.options.relayUrl,
@@ -561,6 +577,7 @@ export class RelayClient {
 
       this.rebuildNotifySubscription(socket);
       this.rebuildReactionSubscription(socket);
+      this.flushPendingTemporarySubscriptions(socket);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.options.onError?.(`feed filter の構築に失敗しました: ${message}`);
@@ -798,6 +815,8 @@ export class RelayClient {
 
   private closeSubscription(subscriptionId: string) {
     const socket = this.socket;
+    const temporarySubscription = this.temporarySubscriptions.get(subscriptionId);
+    const shouldSendClose = temporarySubscription?.requested ?? true;
     this.clearProfileSubscriptionState(subscriptionId);
     this.clearTemporarySubscriptionState(subscriptionId);
 
@@ -805,7 +824,7 @@ export class RelayClient {
       this.clearFeedEoseTimeout();
     }
 
-    if (socket?.readyState === WebSocket.OPEN) {
+    if (shouldSendClose && socket?.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify(["CLOSE", subscriptionId]));
       this.emitDebug({
         type: "send_close",
@@ -848,7 +867,31 @@ export class RelayClient {
       `publish aborted because the relay is reconnecting: ${reason}`,
     );
     this.resetSubscriptionTracking();
-    this.attempt += 1;
+    const nextAttempt = this.attempt + 1;
+
+    if (nextAttempt > MAX_RELAY_RECONNECT_ATTEMPTS) {
+      this.updateStatus({
+        phase: "reconnecting",
+        relayUrl: this.options.relayUrl,
+        attempt: this.attempt,
+        retryInMs: RELAY_RECONNECT_COOLDOWN_MS,
+        detail: `reconnect paused after ${MAX_RELAY_RECONNECT_ATTEMPTS} attempts: ${reason}`,
+      });
+
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = null;
+
+        if (this.manuallyClosed) {
+          return;
+        }
+
+        this.attempt = 0;
+        this.openSocket();
+      }, RELAY_RECONNECT_COOLDOWN_MS);
+      return;
+    }
+
+    this.attempt = nextAttempt;
     const retryInMs = backoffMs(this.attempt - 1);
 
     this.updateStatus({
@@ -1169,13 +1212,6 @@ export class RelayClient {
     reject: (error: Error) => void;
   }): void;
   private startTemporarySubscription(args: TemporarySubscriptionStartArgs) {
-    const socket = this.socket;
-
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      args.reject(new Error("relay is not connected"));
-      return;
-    }
-
     const filters = args.filters.filter((filter) => Object.keys(filter).length > 0);
 
     if (filters.length === 0) {
@@ -1202,6 +1238,7 @@ export class RelayClient {
         filters,
         events: new Map(),
         latestEvent: null,
+        requested: false,
         resolve: args.resolve,
         reject: args.reject,
         timeoutId,
@@ -1212,18 +1249,73 @@ export class RelayClient {
         filters,
         events: new Map(),
         latestEvent: null,
+        requested: false,
         resolve: args.resolve,
         reject: args.reject,
         timeoutId,
       });
     }
 
-    socket.send(JSON.stringify(["REQ", subscriptionId, ...filters]));
+    const socket = this.socket;
+
+    if (!socket) {
+      if (this.reconnectTimer) {
+        return;
+      }
+
+      this.rejectTemporarySubscription(
+        subscriptionId,
+        new Error("relay is not connected"),
+      );
+      return;
+    }
+
+    if (socket.readyState === WebSocket.CONNECTING) {
+      return;
+    }
+
+    if (socket.readyState !== WebSocket.OPEN) {
+      if (this.reconnectTimer) {
+        return;
+      }
+
+      this.rejectTemporarySubscription(
+        subscriptionId,
+        new Error("relay is not connected"),
+      );
+      return;
+    }
+
+    this.sendTemporarySubscriptionRequest(subscriptionId, socket);
+  }
+
+  private flushPendingTemporarySubscriptions(socket: WebSocket) {
+    if (socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    for (const subscriptionId of this.temporarySubscriptions.keys()) {
+      this.sendTemporarySubscriptionRequest(subscriptionId, socket);
+    }
+  }
+
+  private sendTemporarySubscriptionRequest(
+    subscriptionId: string,
+    socket: WebSocket,
+  ) {
+    const subscription = this.temporarySubscriptions.get(subscriptionId);
+
+    if (!subscription || subscription.requested || socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    subscription.requested = true;
+    socket.send(JSON.stringify(["REQ", subscriptionId, ...subscription.filters]));
     this.emitDebug({
       type: "send_req",
       role: "temporary",
       subscriptionId,
-      detail: `sent ${filters.length} temporary filters`,
+      detail: `sent ${subscription.filters.length} temporary filters`,
       readyState: socket.readyState,
     });
   }

@@ -174,6 +174,7 @@ export function useFollowTimeline(args: UseFollowTimelineArgs) {
           targets,
           args.timelineLimit,
           oneShotTransport.relayTransport,
+          [1, 6],
         );
 
         if (cancelled) {

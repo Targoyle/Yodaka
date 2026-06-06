@@ -23,6 +23,7 @@ export function useSignerPubkey() {
   const [signerRequestError, setSignerRequestError] = useState<string | null>(null);
   const [signerRequestMessage, setSignerRequestMessage] = useState<string | null>(null);
   const activeSignerKindRef = useRef<SignerKind | null>(null);
+  const pendingSignerPubkeyRequestRef = useRef<Promise<string | null> | null>(null);
 
   useEffect(() => {
     activeSignerKindRef.current = activeSignerKind;
@@ -157,8 +158,8 @@ export function useSignerPubkey() {
       return refreshLocalSignerSession();
     }
 
-    if (isResolvingSignerPubkey) {
-      return signerPubkey;
+    if (pendingSignerPubkeyRequestRef.current) {
+      return pendingSignerPubkeyRequestRef.current;
     }
 
     if (signerPubkey && !forceRefresh) {
@@ -178,26 +179,32 @@ export function useSignerPubkey() {
         : "拡張機能から公開鍵を取得しています",
     );
 
-    try {
-      const pubkey = await ensureSignerPubkey({
-        forceRefresh,
-      });
-      setSignerRequestMessage(null);
-      return pubkey;
-    } catch (error) {
-      if (error instanceof UnsupportedSignerError) {
-        setSignerAvailable(false);
-      } else {
-        setAutoSignerPromptBlocked(true);
-      }
+    const request = (async () => {
+      try {
+        const pubkey = await ensureSignerPubkey({
+          forceRefresh,
+        });
+        setSignerRequestMessage(null);
+        return pubkey;
+      } catch (error) {
+        if (error instanceof UnsupportedSignerError) {
+          setSignerAvailable(false);
+        } else {
+          setAutoSignerPromptBlocked(true);
+        }
 
-      const message = error instanceof Error ? error.message : String(error);
-      setSignerRequestError(message);
-      setSignerRequestMessage(null);
-      throw error;
-    } finally {
-      setIsResolvingSignerPubkey(false);
-    }
+        const message = error instanceof Error ? error.message : String(error);
+        setSignerRequestError(message);
+        setSignerRequestMessage(null);
+        throw error;
+      } finally {
+        pendingSignerPubkeyRequestRef.current = null;
+        setIsResolvingSignerPubkey(false);
+      }
+    })();
+
+    pendingSignerPubkeyRequestRef.current = request;
+    return request;
   }
 
   async function requestNip07PubkeyFromUserGesture(options?: {
@@ -205,8 +212,8 @@ export function useSignerPubkey() {
   }) {
     const forceRefresh = options?.forceRefresh ?? false;
 
-    if (isResolvingSignerPubkey) {
-      return signerPubkey;
+    if (pendingSignerPubkeyRequestRef.current) {
+      return pendingSignerPubkeyRequestRef.current;
     }
 
     if (activeSignerKind === "nip07" && signerPubkey && !forceRefresh) {
@@ -226,28 +233,34 @@ export function useSignerPubkey() {
         : "拡張機能から公開鍵を取得しています",
     );
 
-    try {
-      const pubkey = await ensureSignerPubkey({
-        forceRefresh,
-        target: "nip07",
-      });
-      await clearLocalSignerSession();
-      setSignerRequestMessage(null);
-      return pubkey;
-    } catch (error) {
-      if (error instanceof UnsupportedSignerError) {
-        setSignerAvailable(false);
-      } else {
-        setAutoSignerPromptBlocked(true);
-      }
+    const request = (async () => {
+      try {
+        const pubkey = await ensureSignerPubkey({
+          forceRefresh,
+          target: "nip07",
+        });
+        await clearLocalSignerSession();
+        setSignerRequestMessage(null);
+        return pubkey;
+      } catch (error) {
+        if (error instanceof UnsupportedSignerError) {
+          setSignerAvailable(false);
+        } else {
+          setAutoSignerPromptBlocked(true);
+        }
 
-      const message = error instanceof Error ? error.message : String(error);
-      setSignerRequestError(message);
-      setSignerRequestMessage(null);
-      throw error;
-    } finally {
-      setIsResolvingSignerPubkey(false);
-    }
+        const message = error instanceof Error ? error.message : String(error);
+        setSignerRequestError(message);
+        setSignerRequestMessage(null);
+        throw error;
+      } finally {
+        pendingSignerPubkeyRequestRef.current = null;
+        setIsResolvingSignerPubkey(false);
+      }
+    })();
+
+    pendingSignerPubkeyRequestRef.current = request;
+    return request;
   }
 
   function createActiveSigner(): NostrSigner | null {

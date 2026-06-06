@@ -208,6 +208,10 @@ export class RelayCoordinator {
     return requested;
   }
 
+  hasRelayClient(relayUrl: string) {
+    return this.clients.has(relayUrl);
+  }
+
   setNotifyFilters(
     builder: ((relayUrl: string) => RelayFilter[] | null | undefined) | null,
   ) {
