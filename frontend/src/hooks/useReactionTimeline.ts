@@ -16,6 +16,7 @@ import {
   findReactionTargetId,
 } from "../lib/nostr/contacts";
 import {
+  isViewerTrackedReactionIntent,
   resolveReactionIntent,
   type ReactionIntent,
   type ViewerReactionState,
@@ -613,6 +614,10 @@ function setViewerReactionIntent(
   targetId: string,
   reactionIntent: ReactionIntent,
 ) {
+  if (!isViewerTrackedReactionIntent(reactionIntent)) {
+    return current as Record<string, ViewerReactionState>;
+  }
+
   const currentReactionState = current[targetId];
 
   if (currentReactionState?.[reactionIntent]) {

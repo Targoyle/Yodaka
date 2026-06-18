@@ -11,6 +11,7 @@ import { profilesEqual } from "./profilePresentation";
 export function buildVisibleTimeline(args: {
   accountTimeline: TimelineItem[];
   followTimeline: TimelineItem[];
+  includeAccountTimelineInFollow: boolean;
   notifyTimeline: TimelineItem[];
   overlayEventIds: string[];
   profileSummaries: Map<string, TimelineProfile>;
@@ -24,7 +25,7 @@ export function buildVisibleTimeline(args: {
       return attachProfilesToTimeline(
         mergePersonalTimelineItems(
           args.followTimeline,
-          args.accountTimeline,
+          args.includeAccountTimelineInFollow ? args.accountTimeline : [],
           args.timelineLimit,
         ),
         args.profileSummaries,

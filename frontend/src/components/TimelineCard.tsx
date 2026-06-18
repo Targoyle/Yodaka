@@ -26,10 +26,13 @@ import {
 } from "../lib/nostr/profilePresentation";
 import { sanitizeProfilePictureUrl } from "../lib/nostr/profile";
 import {
+  buildEmojiReactionIntent,
+  buildReactionLabel,
+  buildReactionTitle,
   formatCollapsedReactionSummary,
   formatReactionContentLabel,
-  type ViewerReactionState,
   type ReactionIntent,
+  type ViewerReactionState,
 } from "../lib/nostr/reaction";
 import { parseContentSegments } from "../lib/ui/contentSegments";
 import { buildAvatarStyle, pubkeyHexColor } from "../lib/ui/avatarStyle";
@@ -39,12 +42,15 @@ import type { TimelineItem } from "../lib/wasm/client";
 
 const REPLY_BAND_WIDTH_PX = 5;
 const MAX_REPLY_BANDS = 6;
+const EXTRA_REACTION_LONG_PRESS_MS = 260;
+const EXTRA_REACTION_RING_RADIUS_PERCENT = (54 / 164) * 100;
 
 type TimelineCardProps = {
   canReply: boolean;
   canSendReaction: boolean;
   className?: string;
   developerModeEnabled: boolean;
+  emojiRevolver: readonly string[];
   embeddedDepth?: number;
   embeddedEventIds?: readonly string[];
   isPublishing: boolean;
@@ -52,6 +58,8 @@ type TimelineCardProps = {
   item: TimelineItem;
   itemRef?: Ref<HTMLLIElement>;
   onCopyEventId: (eventId: string) => void | Promise<void>;
+  onForcePauseTimelineDisplay: () => void;
+  onForceResumeTimelineDisplay: () => void;
   onPauseTimelineDisplay: () => void;
   onPointerDown?: PointerEventHandler<HTMLLIElement>;
   onRepost: (item: TimelineItem) => void | Promise<void>;
@@ -74,11 +82,14 @@ type TimelineCardRenderContext = {
   canReply: boolean;
   canSendReaction: boolean;
   developerModeEnabled: boolean;
+  emojiRevolver: readonly string[];
   embeddedDepth: number;
   embeddedEventIds: readonly string[];
   isProfileImageEnabled: boolean;
   isPublishing: boolean;
   onCopyEventId: (eventId: string) => void | Promise<void>;
+  onForcePauseTimelineDisplay: () => void;
+  onForceResumeTimelineDisplay: () => void;
   onPauseTimelineDisplay: () => void;
   onRepost: (item: TimelineItem) => void | Promise<void>;
   onReply: (item: TimelineItem) => void | Promise<void>;
@@ -196,6 +207,7 @@ export function TimelineCard(props: TimelineCardProps) {
   const showReplyButton = !props.physicsMode && props.item.kind === 1 && props.canReply;
   const showRepostButton = !props.physicsMode && props.item.kind === 1;
   const showReactionButton = !props.physicsMode && props.item.kind === 1;
+  const showExtraReactionButton = showReactionButton && props.emojiRevolver.length > 0;
   const likeCount = props.item.likeCount;
   const kusaCount = props.item.kusaCount ?? 0;
   const showLikeCount = likeCount > 0;
@@ -209,9 +221,13 @@ export function TimelineCard(props: TimelineCardProps) {
   const isKusaReactionActive =
     viewerReactionState?.kusa === true || pendingReactionIntent === "kusa";
   const [isMoreReactionsOpen, setIsMoreReactionsOpen] = useState(false);
+  const [isExtraReactionMenuOpen, setIsExtraReactionMenuOpen] = useState(false);
   const [isDebugMenuOpen, setIsDebugMenuOpen] = useState(false);
   const moreReactionPopoverRef = useRef<HTMLDivElement | null>(null);
+  const extraReactionMenuRef = useRef<HTMLDivElement | null>(null);
   const debugMenuRef = useRef<HTMLDivElement | null>(null);
+  const extraReactionLongPressTimerRef = useRef<number | null>(null);
+  const extraReactionLongPressTriggeredRef = useRef(false);
   const reactionButtonDisabled =
     props.isPublishing
     || isReactionPending
@@ -241,6 +257,17 @@ export function TimelineCard(props: TimelineCardProps) {
   const collapsedReactionSummary = formatCollapsedReactionSummary(
     otherReactionSummaries,
     moreReactionCount,
+  );
+  const headerTimestamp = (
+    <time
+      className="muted timeline-meta timeline-meta-header"
+      dateTime={new Date(props.item.createdAt * 1000).toISOString()}
+      title={formatCreatedAt(props.item.createdAt)}
+    >
+      <span className="timeline-meta-date">{createdAtParts.date}</span>
+      <span className="timeline-meta-separator" aria-hidden="true"> </span>
+      <span className="timeline-meta-time">{createdAtParts.time}</span>
+    </time>
   );
   const developerMenu = props.developerModeEnabled && !props.physicsMode ? (
     <div ref={debugMenuRef} className="timeline-debug-menu-wrap">
@@ -287,11 +314,14 @@ export function TimelineCard(props: TimelineCardProps) {
     canReply: props.canReply,
     canSendReaction: props.canSendReaction,
     developerModeEnabled: props.developerModeEnabled,
+    emojiRevolver: props.emojiRevolver,
     embeddedDepth,
     embeddedEventIds,
     isProfileImageEnabled: props.isProfileImageEnabled,
     isPublishing: props.isPublishing,
     onCopyEventId: props.onCopyEventId,
+    onForcePauseTimelineDisplay: props.onForcePauseTimelineDisplay,
+    onForceResumeTimelineDisplay: props.onForceResumeTimelineDisplay,
     onPauseTimelineDisplay: props.onPauseTimelineDisplay,
     onRepost: props.onRepost,
     onReply: props.onReply,
@@ -318,6 +348,8 @@ export function TimelineCard(props: TimelineCardProps) {
     renderContext,
   });
   const isRepostShell = props.item.kind === 6;
+  const isCardOverlayOpen =
+    isMoreReactionsOpen || isExtraReactionMenuOpen || isDebugMenuOpen;
   const cardStyle =
     replyBandStyle
       ? {
@@ -325,10 +357,11 @@ export function TimelineCard(props: TimelineCardProps) {
           ...props.style,
         }
       : props.style;
-  const cardClassName = `timeline-card${replyBandStyle ? " timeline-card-reply" : ""}${props.physicsMode ? " timeline-card-physics" : ""}${isEmbedded ? " timeline-card-embedded" : ""}${isRepostShell ? " timeline-card-repost-shell" : ""}${props.className ? ` ${props.className}` : ""}`;
+  const cardClassName = `timeline-card${replyBandStyle ? " timeline-card-reply" : ""}${props.physicsMode ? " timeline-card-physics" : ""}${isEmbedded ? " timeline-card-embedded" : ""}${isRepostShell ? " timeline-card-repost-shell" : ""}${isCardOverlayOpen ? " timeline-card-overlay-open" : ""}${props.className ? ` ${props.className}` : ""}`;
 
   useEffect(() => {
     setIsMoreReactionsOpen(false);
+    setIsExtraReactionMenuOpen(false);
   }, [props.item.id]);
 
   useEffect(() => {
@@ -350,6 +383,24 @@ export function TimelineCard(props: TimelineCardProps) {
   }, [isMoreReactionsOpen]);
 
   useEffect(() => {
+    if (!isExtraReactionMenuOpen || typeof document === "undefined") {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!extraReactionMenuRef.current?.contains(event.target as Node)) {
+        closeExtraReactionMenu();
+      }
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [isExtraReactionMenuOpen]);
+
+  useEffect(() => {
     if (!isDebugMenuOpen || typeof document === "undefined") {
       return;
     }
@@ -366,6 +417,12 @@ export function TimelineCard(props: TimelineCardProps) {
       document.removeEventListener("pointerdown", handlePointerDown);
     };
   }, [isDebugMenuOpen]);
+
+  useEffect(() => (
+    () => {
+      clearExtraReactionLongPressTimer();
+    }
+  ), []);
 
   function handleMoreReactionsMouseEnter() {
     if (isCoarsePointerDevice() || otherReactionSummaries.length === 0) {
@@ -391,6 +448,95 @@ export function TimelineCard(props: TimelineCardProps) {
     }
 
     setIsMoreReactionsOpen((current) => !current);
+  }
+
+  function clearExtraReactionLongPressTimer() {
+    if (
+      extraReactionLongPressTimerRef.current === null
+      || typeof window === "undefined"
+    ) {
+      return;
+    }
+
+    window.clearTimeout(extraReactionLongPressTimerRef.current);
+    extraReactionLongPressTimerRef.current = null;
+  }
+
+  function openExtraReactionMenu() {
+    if (props.emojiRevolver.length === 0) {
+      return;
+    }
+
+    if (isIphoneDevice()) {
+      props.onForcePauseTimelineDisplay();
+    } else {
+      props.onPauseTimelineDisplay();
+    }
+    setIsExtraReactionMenuOpen(true);
+  }
+
+  function closeExtraReactionMenu() {
+    clearExtraReactionLongPressTimer();
+    if (isIphoneDevice()) {
+      props.onForceResumeTimelineDisplay();
+    } else {
+      props.onResumeTimelineDisplay();
+    }
+    setIsExtraReactionMenuOpen(false);
+  }
+
+  function handleExtraReactionTriggerPointerDown() {
+    if (reactionButtonDisabled || typeof window === "undefined") {
+      return;
+    }
+
+    extraReactionLongPressTriggeredRef.current = false;
+    clearExtraReactionLongPressTimer();
+    extraReactionLongPressTimerRef.current = window.setTimeout(() => {
+      extraReactionLongPressTriggeredRef.current = true;
+      openExtraReactionMenu();
+    }, EXTRA_REACTION_LONG_PRESS_MS);
+  }
+
+  function handleExtraReactionTriggerPointerUp() {
+    clearExtraReactionLongPressTimer();
+  }
+
+  function handleExtraReactionTriggerClick(event: ReactMouseEvent<HTMLButtonElement>) {
+    if (reactionButtonDisabled || props.emojiRevolver.length === 0) {
+      return;
+    }
+
+    if (extraReactionLongPressTriggeredRef.current) {
+      extraReactionLongPressTriggeredRef.current = false;
+      event.preventDefault();
+      return;
+    }
+
+    setIsExtraReactionMenuOpen((current) => {
+      const next = !current;
+
+      if (next) {
+        if (isIphoneDevice()) {
+          props.onForcePauseTimelineDisplay();
+        } else {
+          props.onPauseTimelineDisplay();
+        }
+      } else {
+        if (isIphoneDevice()) {
+          props.onForceResumeTimelineDisplay();
+        } else {
+          props.onResumeTimelineDisplay();
+        }
+      }
+
+      return next;
+    });
+  }
+
+  function handleExtraReactionSelect(reactionIntent: ReactionIntent) {
+    closeExtraReactionMenu();
+    void props.onReact(props.item, reactionIntent);
   }
 
   const cardBody = isRepostShell ? (
@@ -504,17 +650,20 @@ export function TimelineCard(props: TimelineCardProps) {
             </div>
           ) : null}
         </div>
-        <div className="timeline-identity">
-          <div className="timeline-author-row">
-            <strong className="timeline-author" title={displayPubkey}>
-              {authorLabel}
-            </strong>
-            {authorNameLabel ? (
-              <span className="muted timeline-author-name">
-                {authorNameLabel}
-              </span>
-            ) : null}
+        <div className="timeline-header-main">
+          <div className="timeline-identity">
+            <div className="timeline-author-row">
+              <strong className="timeline-author" title={displayPubkey}>
+                {authorLabel}
+              </strong>
+              {authorNameLabel ? (
+                <span className="muted timeline-author-name">
+                  {authorNameLabel}
+                </span>
+              ) : null}
+            </div>
           </div>
+          {headerTimestamp}
           {authorSubLabel ? (
             <div className="muted timeline-pubkey" title={displayPubkey}>
               {authorSubLabel}
@@ -526,35 +675,37 @@ export function TimelineCard(props: TimelineCardProps) {
         <div className="timeline-text">{displayContent}</div>
       ) : null}
       <div className="timeline-actions">
-        {showReplyButton ? (
-          <button
-            type="button"
-            className="timeline-reaction-button timeline-reply-button"
-            aria-label="返信"
-            title="リプライ"
-            onClick={() => {
-              void props.onReply(props.item);
-            }}
-          >
-            <span aria-hidden="true">↩</span>
-          </button>
-        ) : null}
-        {showRepostButton ? (
-          <button
-            type="button"
-            className="timeline-reaction-button timeline-repost-button"
-            disabled={repostButtonDisabled}
-            title={repostButtonTitle}
-            aria-label="リポスト"
-            onClick={() => {
-              void props.onRepost(props.item);
-            }}
-          >
-            <span aria-hidden="true">🔁</span>
-          </button>
-        ) : null}
-        {showReactionButton ? (
-          <>
+        {showReplyButton || showRepostButton || showReactionButton ? (
+          <div className="timeline-actions-main">
+            {showReplyButton ? (
+              <button
+                type="button"
+                className="timeline-reaction-button timeline-reply-button"
+                aria-label="返信"
+                title="リプライ"
+                onClick={() => {
+                  void props.onReply(props.item);
+                }}
+              >
+                <span aria-hidden="true">↩</span>
+              </button>
+            ) : null}
+            {showRepostButton ? (
+              <button
+                type="button"
+                className="timeline-reaction-button timeline-repost-button"
+                disabled={repostButtonDisabled}
+                title={repostButtonTitle}
+                aria-label="リポスト"
+                onClick={() => {
+                  void props.onRepost(props.item);
+                }}
+              >
+                <span aria-hidden="true">🔁</span>
+              </button>
+            ) : null}
+            {showReactionButton ? (
+              <>
             <button
               type="button"
               className={`timeline-reaction-button${isLikeReactionActive ? " timeline-reaction-button-active-like" : ""}`}
@@ -615,17 +766,64 @@ export function TimelineCard(props: TimelineCardProps) {
                 ) : null}
               </div>
             ) : null}
-          </>
+                {showExtraReactionButton ? (
+                  <div ref={extraReactionMenuRef} className="timeline-reaction-ring-wrap">
+                    <button
+                      type="button"
+                      className="timeline-reaction-button timeline-reaction-button-extra"
+                      disabled={reactionButtonDisabled}
+                      title={reactionButtonTitle ?? "絵文字レボルバ"}
+                      aria-label="絵文字レボルバ"
+                      aria-expanded={isExtraReactionMenuOpen}
+                      aria-haspopup="menu"
+                      onPointerDown={handleExtraReactionTriggerPointerDown}
+                      onPointerUp={handleExtraReactionTriggerPointerUp}
+                      onPointerCancel={handleExtraReactionTriggerPointerUp}
+                      onPointerLeave={handleExtraReactionTriggerPointerUp}
+                      onClick={handleExtraReactionTriggerClick}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                      }}
+                    >
+                      <span aria-hidden="true">◌</span>
+                    </button>
+                    {isExtraReactionMenuOpen ? (
+                      <div className="timeline-reaction-ring" role="menu" aria-label="絵文字レボルバ">
+                        <div className="timeline-reaction-ring-core" aria-hidden="true">
+                          ◌
+                        </div>
+                        {props.emojiRevolver.map((emoji, index) => {
+                          const reactionIntent = buildEmojiReactionIntent(emoji);
+
+                          return (
+                            <button
+                              key={reactionIntent}
+                              type="button"
+                              className="timeline-reaction-ring-button"
+                              style={buildExtraReactionRingButtonStyle(
+                                index,
+                                props.emojiRevolver.length,
+                              )}
+                              title={buildReactionTitle(reactionIntent)}
+                              aria-label={buildReactionTitle(reactionIntent)}
+                              onClick={() => {
+                                handleExtraReactionSelect(reactionIntent);
+                              }}
+                            >
+                              <span className="timeline-reaction-ring-glyph" aria-hidden="true">
+                                {buildReactionLabel(reactionIntent)}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </>
+            ) : null}
+          </div>
         ) : null}
-        <time
-          className="muted timeline-meta"
-          dateTime={new Date(props.item.createdAt * 1000).toISOString()}
-          title={formatCreatedAt(props.item.createdAt)}
-        >
-          <span className="timeline-meta-date">{createdAtParts.date}</span>
-          <span className="timeline-meta-separator" aria-hidden="true"> </span>
-          <span className="timeline-meta-time">{createdAtParts.time}</span>
-        </time>
         {developerMenu}
       </div>
     </>
@@ -685,6 +883,20 @@ function buildTimelineBandPubkeys(timelineView: TimelineView, item: TimelineItem
   }
 
   return item.replyContextPubkeys;
+}
+
+function buildExtraReactionRingButtonStyle(
+  index: number,
+  totalCount: number,
+): CSSProperties {
+  const angle = (-90 + ((360 / totalCount) * index)) * (Math.PI / 180);
+  const leftPercent = 50 + (Math.cos(angle) * EXTRA_REACTION_RING_RADIUS_PERCENT);
+  const topPercent = 50 + (Math.sin(angle) * EXTRA_REACTION_RING_RADIUS_PERCENT);
+
+  return {
+    left: `${leftPercent}%`,
+    top: `${topPercent}%`,
+  };
 }
 
 function formatTimelineItemContent(
@@ -817,12 +1029,15 @@ function renderEmbeddedTimelineCard(args: {
       canReply={args.renderContext.canReply}
       canSendReaction={args.renderContext.canSendReaction}
       developerModeEnabled={args.renderContext.developerModeEnabled}
+      emojiRevolver={args.renderContext.emojiRevolver}
       embeddedDepth={args.renderContext.embeddedDepth + 1}
       embeddedEventIds={[...args.renderContext.embeddedEventIds, args.item.id]}
       isProfileImageEnabled={args.renderContext.isProfileImageEnabled}
       isPublishing={args.renderContext.isPublishing}
       item={args.item}
       onCopyEventId={args.renderContext.onCopyEventId}
+      onForcePauseTimelineDisplay={args.renderContext.onForcePauseTimelineDisplay}
+      onForceResumeTimelineDisplay={args.renderContext.onForceResumeTimelineDisplay}
       onPauseTimelineDisplay={args.renderContext.onPauseTimelineDisplay}
       onRepost={args.renderContext.onRepost}
       onReply={args.renderContext.onReply}
@@ -860,6 +1075,10 @@ function handleFocusedEventLinkClick(
   event.preventDefault();
   window.history.pushState(null, "", href);
   window.dispatchEvent(new PopStateEvent("popstate"));
+}
+
+function isIphoneDevice() {
+  return typeof navigator !== "undefined" && /iPhone/i.test(navigator.userAgent);
 }
 
 function formatNotifyLabel(

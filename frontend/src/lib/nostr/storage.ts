@@ -1,4 +1,10 @@
 import { normalizeRelayUrl, normalizeRelayUrls } from "./relayUrl";
+import {
+  DEFAULT_EMOJI_REVOLVER,
+  MAX_EMOJI_REVOLVER_SIZE,
+  MIN_EMOJI_REVOLVER_SIZE,
+  normalizeEmojiRevolver,
+} from "./reaction";
 
 const RELAY_URLS_KEY = "nostr-client.relay-urls";
 const RELAY_SETTINGS_KEY = "nostr-client.relay-settings";
@@ -9,6 +15,7 @@ const NOTIFY_TAB_ENABLED_KEY = "nostr-client.notify-tab-enabled";
 const REACTION_TAB_ENABLED_KEY = "nostr-client.reaction-tab-enabled";
 const THEME_PREFERENCE_KEY = "nostr-client.theme-preference";
 const MANUAL_PUBKEY_KEY = "nostr-client.manual-pubkey";
+const EMOJI_REVOLVER_KEY = "nostr-client.emoji-revolver";
 const APP_STORAGE_KEYS = [
   RELAY_URLS_KEY,
   RELAY_SETTINGS_KEY,
@@ -19,6 +26,7 @@ const APP_STORAGE_KEYS = [
   REACTION_TAB_ENABLED_KEY,
   THEME_PREFERENCE_KEY,
   MANUAL_PUBKEY_KEY,
+  EMOJI_REVOLVER_KEY,
 ] as const;
 
 const LEGACY_DEFAULT_RELAY_URLS = ["wss://relay.damus.io"];
@@ -163,6 +171,34 @@ export function loadReactionTabEnabled() {
 
 export function saveReactionTabEnabled(enabled: boolean) {
   window.localStorage.setItem(REACTION_TAB_ENABLED_KEY, String(enabled));
+}
+
+export function loadEmojiRevolver() {
+  const raw = window.localStorage.getItem(EMOJI_REVOLVER_KEY);
+
+  if (!raw) {
+    return [...DEFAULT_EMOJI_REVOLVER];
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as string[];
+    const normalized = normalizeEmojiRevolver(parsed, MAX_EMOJI_REVOLVER_SIZE);
+
+    return normalized.length >= MIN_EMOJI_REVOLVER_SIZE
+      ? normalized
+      : [...DEFAULT_EMOJI_REVOLVER];
+  } catch {
+    return [...DEFAULT_EMOJI_REVOLVER];
+  }
+}
+
+export function saveEmojiRevolver(emojis: readonly string[]) {
+  const normalized = normalizeEmojiRevolver(emojis, MAX_EMOJI_REVOLVER_SIZE);
+  const next = normalized.length >= MIN_EMOJI_REVOLVER_SIZE
+    ? normalized
+    : [...DEFAULT_EMOJI_REVOLVER];
+
+  window.localStorage.setItem(EMOJI_REVOLVER_KEY, JSON.stringify(next));
 }
 
 export function loadThemePreference(): ThemePreference {

@@ -40,6 +40,7 @@ type TimelinePanelProps = {
   canReply: boolean;
   canSendReaction: boolean;
   developerModeEnabled: boolean;
+  emojiRevolver: readonly string[];
   emptyMessage: string;
   focusedEventMode: boolean;
   isProfileImageEnabled: boolean;
@@ -126,6 +127,7 @@ export function TimelinePanel(props: TimelinePanelProps) {
   });
   const [isPhysicsDebugPanelDragging, setIsPhysicsDebugPanelDragging] = useState(false);
   const visibleTimelineRef = useRef<TimelineItem[]>(props.visibleTimeline);
+  const forcedTimelinePauseCountRef = useRef(0);
   const hoveredReactionButtonCountRef = useRef(0);
   const reactionPauseReleaseTimerRef = useRef<number | null>(null);
   const physicsDebugDragRef = useRef<PhysicsDebugDragState | null>(null);
@@ -284,6 +286,66 @@ export function TimelinePanel(props: TimelinePanelProps) {
       0,
       hoveredReactionButtonCountRef.current - 1,
     );
+
+    if (hoveredReactionButtonCountRef.current !== 0) {
+      return;
+    }
+
+    if (forcedTimelinePauseCountRef.current !== 0) {
+      return;
+    }
+
+    if (typeof window === "undefined") {
+      setTimelineDisplayPaused(false);
+      setPausedVisibleTimeline(null);
+      return;
+    }
+
+    clearReactionPauseReleaseTimer();
+    reactionPauseReleaseTimerRef.current = window.setTimeout(() => {
+      reactionPauseReleaseTimerRef.current = null;
+
+      if (
+        hoveredReactionButtonCountRef.current !== 0
+        || forcedTimelinePauseCountRef.current !== 0
+      ) {
+        return;
+      }
+
+      setTimelineDisplayPaused(false);
+      setPausedVisibleTimeline(null);
+    }, 0);
+  }
+
+  function forcePauseTimelineDisplay() {
+    if (props.physicsEnabled) {
+      return;
+    }
+
+    clearReactionPauseReleaseTimer();
+    forcedTimelinePauseCountRef.current += 1;
+
+    if (forcedTimelinePauseCountRef.current > 1) {
+      return;
+    }
+
+    setPausedVisibleTimeline(visibleTimelineRef.current);
+    setTimelineDisplayPaused(true);
+  }
+
+  function forceResumeTimelineDisplay() {
+    if (props.physicsEnabled) {
+      return;
+    }
+
+    forcedTimelinePauseCountRef.current = Math.max(
+      0,
+      forcedTimelinePauseCountRef.current - 1,
+    );
+
+    if (forcedTimelinePauseCountRef.current !== 0) {
+      return;
+    }
 
     if (hoveredReactionButtonCountRef.current !== 0) {
       return;
@@ -926,11 +988,14 @@ export function TimelinePanel(props: TimelinePanelProps) {
         canSendReaction={props.canSendReaction}
         className={options.className}
         developerModeEnabled={props.developerModeEnabled}
+        emojiRevolver={props.emojiRevolver}
         isProfileImageEnabled={props.isProfileImageEnabled}
         isPublishing={props.isPublishing}
         item={item}
         itemRef={options.itemRef}
         onCopyEventId={props.onCopyEventId}
+        onForcePauseTimelineDisplay={forcePauseTimelineDisplay}
+        onForceResumeTimelineDisplay={forceResumeTimelineDisplay}
         onPauseTimelineDisplay={pauseTimelineDisplay}
         onPointerDown={options.onPointerDown}
         onRepost={props.onRepost}

@@ -1163,10 +1163,145 @@ mod tests {
 
     use super::{
         MAX_CONTENT_BYTES, MAX_TAG_VALUE_BYTES, PresignedEvent, ReactionSummary,
-        SINCE_BUFFER_SEC, Timeline, UnsignedEvent, build_unsigned_event,
-        current_unix_timestamp, presign_unsigned_event, sanitize_profile_picture_url,
-        verify_event,
+        SINCE_BUFFER_SEC, StoredEvent, Timeline, UnsignedEvent, build_unsigned_event,
+        current_unix_timestamp, has_reply_context, presign_unsigned_event,
+        sanitize_profile_picture_url, verify_event,
     };
+
+    // NIP-10 reply 解決の共有コーパス。frontend (timelinePresentation.ts) と
+    // この crate が同一の入出力に従うことを pin する。期待値を変える場合は
+    // fixtures/reply_resolution.json を直し、両言語のテストを再実行すること。
+    #[test]
+    fn reply_resolution_matches_shared_corpus() {
+        #[derive(serde::Deserialize)]
+        struct Corpus {
+            cases: Vec<CorpusCase>,
+        }
+
+        #[derive(serde::Deserialize)]
+        struct CorpusCase {
+            name: String,
+            context: Vec<CorpusEvent>,
+            subject: CorpusSubject,
+            expected: CorpusExpected,
+        }
+
+        #[derive(serde::Deserialize)]
+        struct CorpusEvent {
+            id: String,
+            pubkey: String,
+        }
+
+        #[derive(serde::Deserialize)]
+        struct CorpusSubject {
+            id: String,
+            pubkey: String,
+            kind: u32,
+            tags: Vec<Vec<String>>,
+            content: String,
+        }
+
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct CorpusExpected {
+            is_reply: bool,
+            reply_target_event_id: Option<String>,
+            reply_target_pubkey: Option<String>,
+            reply_target_relay_hints: Vec<String>,
+            reply_context_pubkeys: Vec<String>,
+        }
+
+        fn stored(
+            id: &str,
+            pubkey: &str,
+            kind: u32,
+            tags: Vec<Vec<String>>,
+            content: &str,
+        ) -> StoredEvent {
+            StoredEvent {
+                id: id.to_owned(),
+                pubkey: pubkey.to_owned(),
+                created_at: 0,
+                safe_created_at: 0,
+                kind,
+                tags,
+                content: content.to_owned(),
+            }
+        }
+
+        let corpus: Corpus =
+            serde_json::from_str(include_str!("../../../../fixtures/reply_resolution.json"))
+                .expect("shared corpus should parse");
+
+        assert!(!corpus.cases.is_empty(), "corpus should have cases");
+
+        for case in corpus.cases {
+            let mut timeline = Timeline::new();
+
+            for context_event in &case.context {
+                timeline.events.insert(
+                    context_event.id.clone(),
+                    stored(&context_event.id, &context_event.pubkey, 1, Vec::new(), ""),
+                );
+            }
+
+            let subject = stored(
+                &case.subject.id,
+                &case.subject.pubkey,
+                case.subject.kind,
+                case.subject.tags.clone(),
+                &case.subject.content,
+            );
+
+            // list_timeline と同じ呼び出し順。reply 系フィールドは feed に乗る
+            // kind 1 のみで算出されるため、それ以外は既定値で揃える。
+            let (
+                is_reply,
+                reply_target_event_id,
+                reply_target_pubkey,
+                reply_target_relay_hints,
+                reply_context_pubkeys,
+            ) = if subject.kind == 1 {
+                let reply_context_pubkeys = timeline.reply_context_pubkeys_for_event(&subject);
+                let reply_target_event_id = timeline.reply_target_event_id_for_event(&subject);
+                let reply_target_pubkey =
+                    timeline.reply_target_pubkey_for_event(&subject, &reply_context_pubkeys);
+                let reply_target_relay_hints =
+                    timeline.reply_target_relay_hints_for_event(&subject);
+                (
+                    has_reply_context(&subject),
+                    reply_target_event_id,
+                    reply_target_pubkey,
+                    reply_target_relay_hints,
+                    reply_context_pubkeys,
+                )
+            } else {
+                (false, None, None, Vec::new(), Vec::new())
+            };
+
+            assert_eq!(is_reply, case.expected.is_reply, "is_reply: {}", case.name);
+            assert_eq!(
+                reply_target_event_id, case.expected.reply_target_event_id,
+                "reply_target_event_id: {}",
+                case.name
+            );
+            assert_eq!(
+                reply_target_pubkey, case.expected.reply_target_pubkey,
+                "reply_target_pubkey: {}",
+                case.name
+            );
+            assert_eq!(
+                reply_target_relay_hints, case.expected.reply_target_relay_hints,
+                "reply_target_relay_hints: {}",
+                case.name
+            );
+            assert_eq!(
+                reply_context_pubkeys, case.expected.reply_context_pubkeys,
+                "reply_context_pubkeys: {}",
+                case.name
+            );
+        }
+    }
 
     #[test]
     fn newer_profile_replaces_older_one() {

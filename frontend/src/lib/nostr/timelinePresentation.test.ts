@@ -490,6 +490,7 @@ describe("buildAuxiliaryTimeline", () => {
     const items = buildVisibleTimeline({
       accountTimeline: [selfPost],
       followTimeline: [followPost, selfPost],
+      includeAccountTimelineInFollow: true,
       notifyTimeline: [],
       overlayEventIds: [],
       profileSummaries: new Map(),
@@ -500,6 +501,50 @@ describe("buildAuxiliaryTimeline", () => {
     });
 
     expect(items.map((item) => item.id)).toEqual(["follow-post", "self-post"]);
+  });
+
+  it("keeps account timeline out of follow view until follow load is ready", () => {
+    const selfPost: TimelineItem = {
+      id: "self-post",
+      pubkey: "a".repeat(64),
+      createdAt: 20,
+      kind: 1,
+      content: "self",
+      isReply: false,
+      replyTargetPubkey: null,
+      replyTargetProfile: null,
+      replyContextPubkeys: [],
+      likeCount: 1,
+      profile: null,
+    };
+    const followPost: TimelineItem = {
+      id: "follow-post",
+      pubkey: "b".repeat(64),
+      createdAt: 30,
+      kind: 1,
+      content: "follow",
+      isReply: false,
+      replyTargetPubkey: null,
+      replyTargetProfile: null,
+      replyContextPubkeys: [],
+      likeCount: 0,
+      profile: null,
+    };
+
+    const items = buildVisibleTimeline({
+      accountTimeline: [selfPost],
+      followTimeline: [followPost],
+      includeAccountTimelineInFollow: false,
+      notifyTimeline: [],
+      overlayEventIds: [],
+      profileSummaries: new Map(),
+      reactionTimeline: [],
+      timeline: [],
+      timelineLimit: 20,
+      timelineView: "follow",
+    });
+
+    expect(items.map((item) => item.id)).toEqual(["follow-post"]);
   });
 
   it("shows reaction timeline when reaction view is selected", () => {
@@ -520,6 +565,7 @@ describe("buildAuxiliaryTimeline", () => {
     const items = buildVisibleTimeline({
       accountTimeline: [],
       followTimeline: [],
+      includeAccountTimelineInFollow: false,
       notifyTimeline: [],
       overlayEventIds: [],
       profileSummaries: new Map(),
@@ -550,6 +596,7 @@ describe("buildAuxiliaryTimeline", () => {
     const items = buildVisibleTimeline({
       accountTimeline: [],
       followTimeline: [],
+      includeAccountTimelineInFollow: false,
       notifyTimeline: [notifyPost],
       overlayEventIds: [],
       profileSummaries: new Map(),

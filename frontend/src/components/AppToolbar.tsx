@@ -26,6 +26,7 @@ type AppToolbarProps = {
   activeSignerKind: SignerKind | null;
   accountTabEnabled: boolean;
   developerModeEnabled: boolean;
+  emojiRevolverCount: number;
   isResolvingSignerPubkey: boolean;
   keyMinerOpen: boolean;
   manualPubkey: string | null;
@@ -47,6 +48,7 @@ type AppToolbarProps = {
   onAccountTabToggle: ChangeEventHandler<HTMLInputElement>;
   onClearLocalData: () => void;
   onDeveloperModeToggle: ChangeEventHandler<HTMLInputElement>;
+  onEmojiRevolverOpen: () => void;
   onKeyMinerToggle: () => void;
   onNotifyTabToggle: ChangeEventHandler<HTMLInputElement>;
   onPhysicsToggle: ChangeEventHandler<HTMLInputElement>;
@@ -126,6 +128,7 @@ export function AppToolbar(props: AppToolbarProps) {
           <RelaySettingsMenu
             accountTabEnabled={props.accountTabEnabled}
             developerModeEnabled={props.developerModeEnabled}
+            emojiRevolverCount={props.emojiRevolverCount}
             keyMinerOpen={props.keyMinerOpen}
             notifyTabEnabled={props.notifyTabEnabled}
             physicsEnabled={props.physicsEnabled}
@@ -141,6 +144,7 @@ export function AppToolbar(props: AppToolbarProps) {
             onAccountTabToggle={props.onAccountTabToggle}
             onClearLocalData={props.onClearLocalData}
             onDeveloperModeToggle={props.onDeveloperModeToggle}
+            onEmojiRevolverOpen={props.onEmojiRevolverOpen}
             onKeyMinerToggle={props.onKeyMinerToggle}
             onNotifyTabToggle={props.onNotifyTabToggle}
             onPhysicsToggle={props.onPhysicsToggle}

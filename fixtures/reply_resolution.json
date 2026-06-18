@@ -1,0 +1,288 @@
+{
+  "comment": "NIP-10 reply resolution の共有テストコーパス。frontend (timelinePresentation.ts) と rust (nostr_core/timeline.rs) の双方が同じ入出力に従うことを pin する。pubkey / event id は lowercase 64-hex。編集時は両言語のテストを必ず再実行すること。",
+  "cases": [
+    {
+      "name": "reply-marker-precedence",
+      "context": [],
+      "subject": {
+        "id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": 1,
+        "content": "reply marker wins over root",
+        "tags": [
+          [
+            "e",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            "wss://root.example",
+            "root"
+          ],
+          [
+            "e",
+            "2222222222222222222222222222222222222222222222222222222222222222",
+            "wss://reply.example",
+            "reply",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          ]
+        ]
+      },
+      "expected": {
+        "isReply": true,
+        "replyTargetEventId": "2222222222222222222222222222222222222222222222222222222222222222",
+        "replyTargetPubkey": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "replyTargetRelayHints": [
+          "wss://reply.example",
+          "wss://root.example"
+        ],
+        "replyContextPubkeys": [
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ]
+      }
+    },
+    {
+      "name": "root-only-fallback",
+      "context": [],
+      "subject": {
+        "id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": 1,
+        "content": "reply to root",
+        "tags": [
+          [
+            "e",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            "wss://root.example",
+            "root"
+          ],
+          [
+            "p",
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        ]
+      },
+      "expected": {
+        "isReply": true,
+        "replyTargetEventId": "1111111111111111111111111111111111111111111111111111111111111111",
+        "replyTargetPubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "replyTargetRelayHints": [
+          "wss://root.example"
+        ],
+        "replyContextPubkeys": [
+          "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        ]
+      }
+    },
+    {
+      "name": "positional-single-target-pubkey-from-referenced-author",
+      "context": [
+        {
+          "id": "4444444444444444444444444444444444444444444444444444444444444444",
+          "pubkey": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        }
+      ],
+      "subject": {
+        "id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": 1,
+        "content": "positional single",
+        "tags": [
+          [
+            "e",
+            "4444444444444444444444444444444444444444444444444444444444444444"
+          ]
+        ]
+      },
+      "expected": {
+        "isReply": true,
+        "replyTargetEventId": "4444444444444444444444444444444444444444444444444444444444444444",
+        "replyTargetPubkey": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "replyTargetRelayHints": [],
+        "replyContextPubkeys": [
+          "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        ]
+      }
+    },
+    {
+      "name": "positional-two-second-is-target",
+      "context": [],
+      "subject": {
+        "id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": 1,
+        "content": "positional two",
+        "tags": [
+          [
+            "e",
+            "1111111111111111111111111111111111111111111111111111111111111111"
+          ],
+          [
+            "e",
+            "2222222222222222222222222222222222222222222222222222222222222222"
+          ]
+        ]
+      },
+      "expected": {
+        "isReply": true,
+        "replyTargetEventId": "2222222222222222222222222222222222222222222222222222222222222222",
+        "replyTargetPubkey": null,
+        "replyTargetRelayHints": [],
+        "replyContextPubkeys": []
+      }
+    },
+    {
+      "name": "positional-three-last-is-target",
+      "context": [],
+      "subject": {
+        "id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": 1,
+        "content": "positional three",
+        "tags": [
+          [
+            "e",
+            "1111111111111111111111111111111111111111111111111111111111111111"
+          ],
+          [
+            "e",
+            "3333333333333333333333333333333333333333333333333333333333333333"
+          ],
+          [
+            "e",
+            "2222222222222222222222222222222222222222222222222222222222222222"
+          ]
+        ]
+      },
+      "expected": {
+        "isReply": true,
+        "replyTargetEventId": "2222222222222222222222222222222222222222222222222222222222222222",
+        "replyTargetPubkey": null,
+        "replyTargetRelayHints": [],
+        "replyContextPubkeys": []
+      }
+    },
+    {
+      "name": "self-etag4-falls-back-to-preferred-p",
+      "context": [],
+      "subject": {
+        "id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": 1,
+        "content": "self in e-tag pubkey",
+        "tags": [
+          [
+            "e",
+            "2222222222222222222222222222222222222222222222222222222222222222",
+            "wss://r.example",
+            "reply",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          [
+            "p",
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        ]
+      },
+      "expected": {
+        "isReply": true,
+        "replyTargetEventId": "2222222222222222222222222222222222222222222222222222222222222222",
+        "replyTargetPubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "replyTargetRelayHints": [
+          "wss://r.example"
+        ],
+        "replyContextPubkeys": [
+          "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ]
+      }
+    },
+    {
+      "name": "p-reply-marker-without-e-tag",
+      "context": [],
+      "subject": {
+        "id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": 1,
+        "content": "p reply marker",
+        "tags": [
+          [
+            "p",
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ],
+          [
+            "p",
+            "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "",
+            "reply"
+          ]
+        ]
+      },
+      "expected": {
+        "isReply": false,
+        "replyTargetEventId": null,
+        "replyTargetPubkey": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "replyTargetRelayHints": [],
+        "replyContextPubkeys": [
+          "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        ]
+      }
+    },
+    {
+      "name": "kind6-repost-has-no-reply-context",
+      "context": [],
+      "subject": {
+        "id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": 6,
+        "content": "",
+        "tags": [
+          [
+            "e",
+            "4444444444444444444444444444444444444444444444444444444444444444",
+            "",
+            "mention"
+          ],
+          [
+            "p",
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          ]
+        ]
+      },
+      "expected": {
+        "isReply": false,
+        "replyTargetEventId": null,
+        "replyTargetPubkey": null,
+        "replyTargetRelayHints": [],
+        "replyContextPubkeys": []
+      }
+    },
+    {
+      "name": "a-tag-only-is-reply-without-event-target",
+      "context": [],
+      "subject": {
+        "id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": 1,
+        "content": "reply to addressable",
+        "tags": [
+          [
+            "a",
+            "30023:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:slug"
+          ],
+          [
+            "p",
+            "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          ]
+        ]
+      },
+      "expected": {
+        "isReply": true,
+        "replyTargetEventId": null,
+        "replyTargetPubkey": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "replyTargetRelayHints": [],
+        "replyContextPubkeys": [
+          "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        ]
+      }
+    }
+  ]
+}

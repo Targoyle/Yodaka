@@ -4,6 +4,7 @@ import type {
   Ref,
 } from "react";
 import type { RelayDiagnosticState } from "../app/types";
+import { MAX_EMOJI_REVOLVER_SIZE } from "../lib/nostr/reaction";
 import type { RelayStatus } from "../lib/nostr/relay";
 import type { RelayCoordinatorStatus } from "../lib/nostr/relayCoordinator";
 import type { RelaySetting } from "../lib/nostr/storage";
@@ -12,6 +13,7 @@ import { RelaySettingItem } from "./RelaySettingItem";
 type RelaySettingsMenuProps = {
   accountTabEnabled: boolean;
   developerModeEnabled: boolean;
+  emojiRevolverCount: number;
   physicsEnabled: boolean;
   keyMinerOpen: boolean;
   notifyTabEnabled: boolean;
@@ -27,6 +29,7 @@ type RelaySettingsMenuProps = {
   onDeveloperModeToggle: ChangeEventHandler<HTMLInputElement>;
   onAccountTabToggle: ChangeEventHandler<HTMLInputElement>;
   onClearLocalData: () => void;
+  onEmojiRevolverOpen: () => void;
   onKeyMinerToggle: () => void;
   onNotifyTabToggle: ChangeEventHandler<HTMLInputElement>;
   onPhysicsToggle: ChangeEventHandler<HTMLInputElement>;
@@ -43,6 +46,12 @@ type RelaySettingsMenuProps = {
 
 export function RelaySettingsMenu(props: RelaySettingsMenuProps) {
   const enabledRelayCount = props.relaySettings.filter((setting) => setting.enabled).length;
+  const readRelayCount = props.relaySettings.filter((setting) => (
+    setting.enabled && setting.read
+  )).length;
+  const writeRelayCount = props.relaySettings.filter((setting) => (
+    setting.enabled && setting.write
+  )).length;
   const relayStatusMap = new Map<string, RelayStatus>(
     props.relayStatus.relayStatuses.map((status) => [status.relayUrl, status]),
   );
@@ -164,6 +173,22 @@ export function RelaySettingsMenu(props: RelaySettingsMenuProps) {
             </label>
           </div>
           <div className="settings-menu-row">
+            <div className="settings-menu-row-copy">
+              <span className="settings-menu-label">絵文字レボルバ</span>
+              <span className="muted settings-menu-row-meta">
+                {`${props.emojiRevolverCount}/${MAX_EMOJI_REVOLVER_SIZE}`}
+              </span>
+            </div>
+            <button
+              type="button"
+              className="relay-settings-button relay-settings-button-secondary settings-menu-action-button"
+              onClick={props.onEmojiRevolverOpen}
+              title="絵文字レボルバを開く"
+            >
+              開く
+            </button>
+          </div>
+          <div className="settings-menu-row">
             <span className="settings-menu-label">公開鍵マイニング</span>
             <button
               type="button"
@@ -235,59 +260,78 @@ export function RelaySettingsMenu(props: RelaySettingsMenuProps) {
           </div>
         </div>
 
-        <div className="relay-settings-body">
-          <ul className="relay-settings-list">
-            {props.relaySettings.map((setting, index) => {
-              return (
-                <RelaySettingItem
-                  key={setting.url}
-                  developerModeEnabled={props.developerModeEnabled}
-                  index={index}
-                  relayBootstrapDeferred={props.relayBootstrapDeferred}
-                  relayDiagnostic={props.relayDiagnostics[setting.url]}
-                  relaySetting={setting}
-                  relayStatus={relayStatusMap.get(setting.url)}
-                  totalCount={props.relaySettings.length}
-                  onMove={props.onRelayMove}
-                  onRemove={props.onRelayRemove}
-                  onRoleToggle={props.onRelayRoleToggle}
-                  onToggle={props.onRelayToggle}
-                />
-              );
-            })}
-          </ul>
+        <details
+          className="settings-menu-disclosure"
+          open={props.relaySettingsError ? true : undefined}
+        >
+          <summary className="settings-menu-disclosure-summary">
+            <span className="settings-menu-disclosure-copy">
+              <span className="settings-menu-label">Relay</span>
+              <span className="muted settings-menu-disclosure-meta">
+                {`${enabledRelayCount}/${props.relaySettings.length} 有効`}
+              </span>
+            </span>
+            <span className="muted settings-menu-disclosure-stats">
+              {`read ${readRelayCount} / write ${writeRelayCount}`}
+            </span>
+          </summary>
 
-          <form className="relay-settings-form" onSubmit={props.onRelayAdd}>
-            <input
-              className="relay-settings-input"
-              value={props.relayDraftUrl}
-              onChange={props.onRelayDraftChange}
-              placeholder="wss://example.com"
-              aria-label="relay URL"
-            />
-            <div className="relay-settings-form-actions">
-              <button
-                type="submit"
-                className="relay-settings-button relay-settings-button-primary"
-              >
-                追加
-              </button>
-              <button
-                type="button"
-                className="relay-settings-button relay-settings-button-secondary"
-                onClick={props.onRelayReset}
-              >
-                既定値へ戻す
-              </button>
+          <div className="relay-settings-body">
+            <div className="relay-settings-list-shell">
+              <ul className="relay-settings-list">
+                {props.relaySettings.map((setting, index) => {
+                  return (
+                    <RelaySettingItem
+                      key={setting.url}
+                      developerModeEnabled={props.developerModeEnabled}
+                      index={index}
+                      relayBootstrapDeferred={props.relayBootstrapDeferred}
+                      relayDiagnostic={props.relayDiagnostics[setting.url]}
+                      relaySetting={setting}
+                      relayStatus={relayStatusMap.get(setting.url)}
+                      totalCount={props.relaySettings.length}
+                      onMove={props.onRelayMove}
+                      onRemove={props.onRelayRemove}
+                      onRoleToggle={props.onRelayRoleToggle}
+                      onToggle={props.onRelayToggle}
+                    />
+                  );
+                })}
+              </ul>
             </div>
-          </form>
 
-          {props.relaySettingsError ? (
-            <p className="composer-feedback composer-status-error">
-              {props.relaySettingsError}
-            </p>
-          ) : null}
-        </div>
+            <form className="relay-settings-form" onSubmit={props.onRelayAdd}>
+              <input
+                className="relay-settings-input"
+                value={props.relayDraftUrl}
+                onChange={props.onRelayDraftChange}
+                placeholder="wss://example.com"
+                aria-label="relay URL"
+              />
+              <div className="relay-settings-form-actions">
+                <button
+                  type="submit"
+                  className="relay-settings-button relay-settings-button-primary"
+                >
+                  追加
+                </button>
+                <button
+                  type="button"
+                  className="relay-settings-button relay-settings-button-secondary"
+                  onClick={props.onRelayReset}
+                >
+                  既定値へ戻す
+                </button>
+              </div>
+            </form>
+
+            {props.relaySettingsError ? (
+              <p className="composer-feedback composer-status-error">
+                {props.relaySettingsError}
+              </p>
+            ) : null}
+          </div>
+        </details>
       </div>
     </details>
   );

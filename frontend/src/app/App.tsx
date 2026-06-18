@@ -31,6 +31,7 @@ import {
   loadAccountTabEnabled,
   buildDefaultRelaySettings,
   clearAppStorage,
+  loadEmojiRevolver,
   listActiveRelayUrls,
   listReadRelayUrls,
   listWriteRelayUrls,
@@ -43,6 +44,7 @@ import {
   loadThemePreference,
   saveAccountTabEnabled,
   saveDeveloperModeEnabled,
+  saveEmojiRevolver,
   saveProfileImagesEnabled,
   saveNotifyTabEnabled,
   saveReactionTabEnabled,
@@ -90,10 +92,15 @@ const loadEventJsonDialog = () =>
   import("../components/EventJsonDialog").then((module) => ({
     default: module.EventJsonDialog,
   }));
+const loadEmojiRevolverDialog = () =>
+  import("../components/EmojiRevolverDialog").then((module) => ({
+    default: module.EmojiRevolverDialog,
+  }));
 
 const LazyKeyMinerPanel = lazy(loadKeyMinerPanel);
 const LazySignerDialog = lazy(loadSignerDialog);
 const LazyEventJsonDialog = lazy(loadEventJsonDialog);
+const LazyEmojiRevolverDialog = lazy(loadEmojiRevolverDialog);
 const COMPOSER_NOTIFY_TTL_MS = 5_000;
 type PendingAuthenticatedTimelineAction =
   | {
@@ -131,6 +138,9 @@ export function App() {
     id: string;
     text: string;
   }>>([]);
+  const [emojiRevolver, setEmojiRevolver] = useState(() =>
+    loadEmojiRevolver(),
+  );
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const settingsMenuRef = useRef<HTMLDetailsElement | null>(null);
   const [themePreference, setThemePreference] = useState<ThemePreference>(() =>
@@ -182,6 +192,7 @@ export function App() {
     title: "",
     jsonText: "",
   });
+  const [emojiRevolverDialogOpen, setEmojiRevolverDialogOpen] = useState(false);
   const [timelineView, setTimelineView] = useState<TimelineView>(() =>
     initialFocusedEventRoute ? "relay" : initialManualPubkey ? "follow" : "relay",
   );
@@ -714,6 +725,22 @@ export function App() {
     handleKeyMinerToggle();
   }
 
+  function handleOpenEmojiRevolverDialog() {
+    void loadEmojiRevolverDialog();
+    settingsMenuRef.current?.removeAttribute("open");
+    setEmojiRevolverDialogOpen(true);
+  }
+
+  function handleCloseEmojiRevolverDialog() {
+    setEmojiRevolverDialogOpen(false);
+  }
+
+  function handleSaveEmojiRevolver(next: string[]) {
+    setEmojiRevolver(next);
+    saveEmojiRevolver(next);
+    setEmojiRevolverDialogOpen(false);
+  }
+
   function handleCloseSignerDialog() {
     setPendingAuthenticatedTimelineAction(null);
     setSignerDialogOpen(false);
@@ -823,6 +850,7 @@ export function App() {
   const baseVisibleTimeline = buildVisibleTimeline({
     accountTimeline,
     followTimeline,
+    includeAccountTimelineInFollow: followLoadState === "ready",
     notifyTimeline,
     overlayEventIds,
     profileSummaries: profileSummariesRef.current,
@@ -1146,6 +1174,7 @@ export function App() {
         activeSignerKind={activeSignerKind}
         accountTabEnabled={accountTabEnabled}
         developerModeEnabled={developerModeEnabled}
+        emojiRevolverCount={emojiRevolver.length}
         isResolvingSignerPubkey={isResolvingSignerPubkey}
         keyMinerOpen={keyMinerOpen}
         manualPubkey={manualPubkey}
@@ -1167,6 +1196,7 @@ export function App() {
         onAccountTabToggle={handleAccountTabToggle}
         onClearLocalData={handleClearLocalData}
         onDeveloperModeToggle={handleDeveloperModeToggle}
+        onEmojiRevolverOpen={handleOpenEmojiRevolverDialog}
         onKeyMinerToggle={handleKeyMinerToggleClick}
         onNotifyTabToggle={handleNotifyTabToggle}
         onPhysicsToggle={handlePhysicsToggle}
@@ -1229,6 +1259,7 @@ export function App() {
           canReply={canStartReply}
           canSendReaction={canSendReaction}
           developerModeEnabled={developerModeEnabled}
+          emojiRevolver={emojiRevolver}
           emptyMessage={timelineEmptyMessage}
           focusedEventMode={Boolean(focusedEventRoute)}
           isProfileImageEnabled={profileImagesEnabled}
@@ -1302,6 +1333,34 @@ export function App() {
             onOpenManualPubkey={handleOpenManualPubkeyFromSignerDialog}
             onUseExtension={handleUseNip07FromDialog}
             onUseNsec={handleUseNsecFromDialog}
+          />
+        </Suspense>
+      ) : null}
+      {emojiRevolverDialogOpen ? (
+        <Suspense
+          fallback={(
+            <div className="dialog-backdrop" role="presentation">
+              <section
+                className="dialog-panel"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="emoji-revolver-loading-title"
+              >
+                <div className="dialog-copy">
+                  <h2 id="emoji-revolver-loading-title" className="dialog-title">
+                    絵文字レボルバ
+                  </h2>
+                  <p className="muted dialog-text">読み込み中...</p>
+                </div>
+              </section>
+            </div>
+          )}
+        >
+          <LazyEmojiRevolverDialog
+            emojis={emojiRevolver}
+            isOpen={emojiRevolverDialogOpen}
+            onClose={handleCloseEmojiRevolverDialog}
+            onSave={handleSaveEmojiRevolver}
           />
         </Suspense>
       ) : null}
